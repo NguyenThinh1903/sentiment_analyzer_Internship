@@ -1,0 +1,16 @@
+torch
+transformers[torch] # Hoặc transformers nếu chỉ cần PyTorch
+pandas
+numpy
+scikit-learn
+streamlit
+plotly
+seaborn # For visualization.py (can be removed if only using Plotly in app)
+matplotlib # For visualization.py
+# Optional for API
+fastapi
+uvicorn[standard]
+pydantic
+# Optional for specific tokenizer/model features if needed later
+# sentencepiece
+# protobuf
