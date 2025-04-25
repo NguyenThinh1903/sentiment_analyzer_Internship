@@ -1,6 +1,7 @@
 # Dự án Thực tập: Web App Phân Tích Cảm Xúc Khách Hàng
 
 Dự án này xây dựng một ứng dụng web đơn giản để phân tích cảm xúc (Tích cực, Tiêu cực, Trung tính) từ phản hồi của khách hàng bằng cách sử dụng mô hình Transformer (DistilBERT) được fine-tune trên PyTorch và Hugging Face. Giao diện được xây dựng bằng Streamlit và có một API tùy chọn bằng FastAPI.
+Dùng Goole Colab để train model 
 
 ## Các Chức Năng Chính
 

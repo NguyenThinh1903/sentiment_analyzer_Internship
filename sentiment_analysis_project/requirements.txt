@@ -1,16 +1,20 @@
+# requirements.txt
+
 torch
-transformers[torch] # Hoặc transformers nếu chỉ cần PyTorch
+# transformers[torch] # Cài bản đầy đủ nếu cần các tính năng khác
+transformers>=4.18.0 # Đảm bảo phiên bản đủ mới
+sentencepiece # Thường được cài cùng transformers
 pandas
 numpy
 scikit-learn
 streamlit
 plotly
-seaborn # For visualization.py (can be removed if only using Plotly in app)
-matplotlib # For visualization.py
+seaborn
+matplotlib
 # Optional for API
 fastapi
 uvicorn[standard]
 pydantic
-# Optional for specific tokenizer/model features if needed later
-# sentencepiece
-# protobuf
+# Thư viện dịch nếu dùng cách dịch input (hiện tại không cần với PhoBERT)
+# googletrans==4.0.0-rc1
+# google-cloud-translate

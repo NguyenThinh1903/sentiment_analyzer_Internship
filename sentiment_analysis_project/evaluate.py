@@ -13,8 +13,7 @@ from data_processing import load_processed_data, create_data_loader
 from model import load_model_and_tokenizer
 from visualization import plot_confusion_matrix, plot_training_history
 
-# Sao chép hoặc import hàm evaluate_epoch từ train.py
-# (Đảm bảo hàm này tồn tại và đúng)
+
 def evaluate_epoch(model, data_loader, device):
     """Thực hiện đánh giá trên một tập dữ liệu."""
     model = model.eval()
