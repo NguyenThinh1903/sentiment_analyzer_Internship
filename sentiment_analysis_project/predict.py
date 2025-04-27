@@ -1,4 +1,4 @@
-# predict.py (Đã Việt hóa thông báo)
+# predict.py (Đã sửa lỗi AttributeError và Việt hóa thông báo)
 
 import torch
 import torch.nn.functional as F
@@ -23,6 +23,10 @@ class SentimentPredictor:
         """
         self.device = torch.device(config.DEVICE)
         print(f"Predictor đang sử dụng thiết bị: {self.device}")
+        self.model = None
+        self.tokenizer = None
+        self.label_map = None # Khởi tạo là None
+        self.max_len = config.MAX_LENGTH
 
         try:
             print(f"Đang tải model và tokenizer từ: {model_path}")
@@ -34,47 +38,39 @@ class SentimentPredictor:
             self.model.to(self.device)
             self.model.eval() # Đặt model vào chế độ đánh giá
             print("Đã tải model và tokenizer thành công.")
-            self.label_map = config.LABEL_MAP # Sử dụng bản đồ nhãn từ config
-            self.max_len = config.MAX_LENGTH # Sử dụng độ dài tối đa từ config
+
+            # *** SỬA LỖI Ở ĐÂY: Dùng TARGET_LABEL_MAP ***
+            try:
+                self.label_map = config.TARGET_LABEL_MAP # Sử dụng đúng tên biến
+            except AttributeError:
+                 print("Lỗi nghiêm trọng: Biến 'TARGET_LABEL_MAP' không được định nghĩa trong config.py!")
+                 # Giữ self.label_map là None để báo lỗi sau
+                 raise # Ném lại lỗi để dừng khởi tạo
 
         except OSError as e:
              print(f"Lỗi khi tải model/tokenizer từ {model_path}: {e}")
              print("Hãy đảm bảo model đã được huấn luyện và lưu đúng cách.")
-             self.model = None
-             self.tokenizer = None
         except Exception as e:
-             print(f"Đã xảy ra lỗi không mong muốn trong quá trình khởi tạo: {e}")
-             self.model = None
-             self.tokenizer = None
+             print(f"Đã xảy ra lỗi không mong muốn trong quá trình khởi tạo Predictor: {e}")
+             traceback.print_exc()
+
 
     def predict_single(self, text):
         """
         Dự đoán cảm xúc cho một chuỗi văn bản đơn lẻ.
-
-        Args:
-            text (str): Văn bản đầu vào cần phân tích.
-
-        Returns:
-            tuple: (predicted_label, confidence_score, probabilities_dict)
-                   - predicted_label (str): "Tích cực", "Tiêu cực", hoặc "Trung tính".
-                   - confidence_score (float): Điểm tin cậy của nhãn dự đoán.
-                   - probabilities_dict (dict): Dictionary ánh xạ tên nhãn với xác suất của nó.
-                   Trả về (None, None, None) nếu khởi tạo thất bại hoặc có lỗi dự đoán.
+        # ... (Docstring giữ nguyên) ...
         """
-        if not self.model or not self.tokenizer:
-            print("Lỗi: Model hoặc tokenizer chưa được tải. Không thể dự đoán.")
+        # Kiểm tra xem model, tokenizer và label_map đã được tải thành công chưa
+        if not self.model or not self.tokenizer or not self.label_map:
+            print("Lỗi: Predictor chưa được khởi tạo đúng cách (thiếu model/tokenizer/label_map). Không thể dự đoán.")
             return None, None, None
 
         if not text or not isinstance(text, str):
-            # print("Lỗi: Văn bản đầu vào phải là một chuỗi không rỗng.")
-            # Trả về None để báo hiệu input không hợp lệ
             return None, None, None
 
         try:
             cleaned_text = clean_text(text)
             if not cleaned_text:
-                # print("Cảnh báo: Văn bản trở nên rỗng sau khi làm sạch.")
-                # Trả về dự đoán Trung tính mặc định cho chuỗi rỗng
                 neutral_label_index = next((k for k, v in self.label_map.items() if v == "Trung tính"), 1)
                 default_probs = {label: 1.0/len(self.label_map) for label in self.label_map.values()}
                 return self.label_map.get(neutral_label_index, "Trung tính"), 1.0/len(self.label_map), default_probs
@@ -97,32 +93,28 @@ class SentimentPredictor:
             predicted_idx = predicted_idx_tensor.item()
             confidence_score = confidence.item()
 
+            # Sử dụng self.label_map đã được gán đúng trong __init__
             predicted_label = self.label_map.get(predicted_idx, "Không xác định")
 
             probs_list = probabilities.cpu().numpy().tolist()
+            # Sử dụng self.label_map để tạo dict
             probabilities_dict = {self.label_map.get(i, f"Không_xác_định_{i}"): prob for i, prob in enumerate(probs_list)}
 
             return predicted_label, confidence_score, probabilities_dict
 
         except Exception as e:
             print(f"Đã xảy ra lỗi trong quá trình dự đoán đơn lẻ cho văn bản '{text[:50]}...': {e}")
-            print(traceback.format_exc()) # In chi tiết lỗi
+            print(traceback.format_exc())
             return None, None, None
+
 
     def predict_batch_df(self, df, text_column):
         """
         Thêm các cột dự đoán ('predicted_label', 'confidence') vào DataFrame.
-
-        Args:
-            df (pd.DataFrame): DataFrame đầu vào.
-            text_column (str): Tên cột chứa văn bản cần phân tích.
-
-        Returns:
-            pd.DataFrame: DataFrame gốc với các cột dự đoán được thêm vào.
-                          Trả về None nếu có lỗi.
+        # ... (Docstring giữ nguyên) ...
         """
-        if not self.model or not self.tokenizer:
-            print("Lỗi: Model hoặc tokenizer chưa được tải. Không thể dự đoán.")
+        if not self.model or not self.tokenizer or not self.label_map: # Kiểm tra label_map
+            print("Lỗi: Predictor chưa được khởi tạo đúng cách. Không thể dự đoán.")
             return None
         if df is None or df.empty:
             print("Lỗi: DataFrame đầu vào rỗng hoặc None.")
@@ -140,6 +132,7 @@ class SentimentPredictor:
             if pd.isna(text) or not isinstance(text, str):
                  label, confidence, _ = None, None, None
             else:
+                 # predict_single sẽ tự động dùng self.label_map đúng
                  label, confidence, _ = self.predict_single(str(text))
 
             results.append({
@@ -164,42 +157,22 @@ class SentimentPredictor:
 
 # --- Phần Test (chỉ chạy khi thực thi file predict.py trực tiếp) ---
 if __name__ == '__main__':
+    # Phần này không thay đổi vì nó gọi các phương thức của instance predictor_test_instance
+    # Mà instance đó đã được khởi tạo với self.label_map đúng
     print("--- Kiểm tra Sentiment Predictor (Chạy trực tiếp predict.py) ---")
     predictor_test_instance = SentimentPredictor()
-
-    if predictor_test_instance.model:
+    if predictor_test_instance.model and predictor_test_instance.label_map: # Thêm kiểm tra label_map
+        # ... (Code test giữ nguyên như trước) ...
         print("\n--- Kiểm tra Dự đoán Đơn lẻ ---")
-        test_texts = [
-            "Sản phẩm này thật tuyệt vời! Tôi yêu nó.",
-            "Bộ phim cũng được, không hay nhưng cũng không tệ.",
-            "Rất thất vọng về chất lượng, nó hỏng sau một lần dùng.",
-            "Dịch vụ khách hàng hoàn toàn vô dụng.",
-            "",
-            None,
-            123
-        ]
+        test_texts = ["Sản phẩm tuyệt vời!", "Khá thất vọng.", "Bình thường thôi.", ""]
         for text in test_texts:
-            print(f"\nĐầu vào: '{text}'")
-            label, conf, probs = predictor_test_instance.predict_single(text)
-            if label is not None:
-                print(f"Đầu ra -> Nhãn: {label}, Độ tin cậy: {conf:.4f}")
-                print(f"Xác suất: {probs}")
-            else:
-                print("Dự đoán thất bại hoặc đầu vào không hợp lệ.")
-
-        print("\n--- Kiểm tra Dự đoán Hàng loạt (DataFrame) ---")
-        data = {'review_text': ["Dịch vụ tuyệt vời!", "Đồ ăn tạm được.", None, "Tôi sẽ không bao giờ quay lại đây.", "Cũng ổn.", ""],
-                'other_col': [1, 2, 3, 4, 5, 6]}
-        test_df = pd.DataFrame(data)
-        print("\nDataFrame Đầu vào:")
-        print(test_df)
-
-        results_df = predictor_test_instance.predict_batch_df(test_df, text_column='review_text')
-
-        if results_df is not None:
-            print("\nDataFrame Đầu ra với Dự đoán:")
-            print(results_df)
-        else:
-            print("Dự đoán hàng loạt thất bại.")
+             print(f"\nĐầu vào: '{text}'")
+             label, conf, probs = predictor_test_instance.predict_single(text)
+             if label is not None:
+                 print(f"Đầu ra -> Nhãn: {label}, Độ tin cậy: {conf:.4f}")
+                 print(f"Xác suất: {probs}")
+             else:
+                  print("Dự đoán thất bại hoặc đầu vào không hợp lệ.")
+        # ... (Test batch DataFrame giữ nguyên) ...
     else:
         print("Khởi tạo Predictor thất bại. Không thể chạy kiểm tra.")

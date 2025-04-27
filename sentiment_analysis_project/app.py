@@ -1,4 +1,4 @@
-# app.py (Đã Việt hóa giao diện người dùng)
+# app.py (Kiểm tra lại thụt dòng cho các khối with)
 
 import streamlit as st
 import pandas as pd
@@ -6,333 +6,324 @@ import plotly.graph_objects as go
 import plotly.express as px
 import os
 import time
+import requests
+import json
+import traceback
+from collections import Counter
 
 import config
-from predict import SentimentPredictor
-# Giả sử các file ảnh đã được tạo bởi evaluate.py
-# from visualization import plot_confusion_matrix
+# Import visualization chỉ dùng cho Tab 3
+try:
+    from visualization import plot_confusion_matrix, plot_training_history
+    VISUALIZATION_AVAILABLE = True
+except ImportError:
+    VISUALIZATION_AVAILABLE = False
+    print("Cảnh báo: Không tìm thấy module 'visualization'. Tab 3 sẽ thiếu một số hình ảnh.")
+
 
 # --- Cấu hình Trang ---
-st.set_page_config(
-    page_title="Phân tích Cảm xúc Khách hàng",
-    page_icon="😊",
-    layout="wide"
-)
+st.set_page_config(page_title="Xử lý Phản hồi (Lai ghép)", page_icon="🚀", layout="wide")
 
-# --- Tải Predictor (Sử dụng cache) ---
-@st.cache_resource # Cache việc tải model
-def load_predictor(model_path=config.MODEL_SAVE_PATH):
-    """Tải instance của SentimentPredictor."""
-    print("Đang thử tải Sentiment Predictor...")
-    predictor = SentimentPredictor(model_path=model_path)
-    if not predictor.model or not predictor.tokenizer:
-        # Hiển thị lỗi ngay trên UI nếu không tải được model
-        st.error(f"Lỗi nghiêm trọng: Không thể tải model từ '{model_path}'. Đảm bảo model đã được huấn luyện và lưu đúng chỗ.")
-        return None # Trả về None để báo hiệu lỗi
-    print("Sentiment Predictor đã được tải thành công.")
-    return predictor
+# --- Địa chỉ API Backend ---
+# Đảm bảo API Host và Port đúng trong config.py
+BACKEND_API_URL = f"http://{getattr(config, 'API_HOST', '127.0.0.1')}:{getattr(config, 'API_PORT', 8000)}/process_comment_hybrid/"
 
-predictor = load_predictor()
-
-# --- Hàm trợ giúp ---
-def display_probabilities_pie(probabilities_dict):
-    """Hiển thị biểu đồ tròn thể hiện xác suất các cảm xúc."""
-    if probabilities_dict:
-        # Lấy nhãn và giá trị từ dict, đảm bảo đúng thứ tự nếu cần
-        labels = list(probabilities_dict.keys())
-        values = list(probabilities_dict.values())
-        # Sắp xếp theo thứ tự mong muốn (ví dụ: Tiêu cực, Trung tính, Tích cực)
-        sorted_labels = ["Tiêu cực", "Trung tính", "Tích cực"]
-        try:
-            # Cố gắng sắp xếp theo thứ tự trên, bỏ qua nếu nhãn không tồn tại
-            label_map_inv = {v: k for k, v in config.LABEL_MAP.items()} # Map ngược để lấy index
-            values_sorted = sorted(zip(labels, values), key=lambda item: label_map_inv.get(item[0], 99)) # Sắp xếp theo index, nhãn lạ cuối cùng
-            labels_sorted = [item[0] for item in values_sorted]
-            values_final = [item[1] for item in values_sorted]
-            labels_final = labels_sorted
-        except Exception: # Nếu có lỗi sắp xếp, dùng thứ tự gốc
-             labels_final = labels
-             values_final = values
-
-        # Định nghĩa màu sắc tương ứng
-        color_map = {"Tiêu cực": '#DC143C', "Trung tính": '#FFD700', "Tích cực": '#32CD32', "Không xác định": '#808080'}
-        colors = [color_map.get(label, '#808080') for label in labels_final]
-
-
-        fig = go.Figure(data=[go.Pie(labels=labels_final, values=values_final, hole=.3,
-                                     marker_colors=colors,
-                                     pull=[0.05 if v == max(values_final) else 0 for v in values_final] # Kéo miếng lớn nhất
-                                     )])
-        fig.update_layout(
-            title_text='Phân bổ Xác suất Cảm xúc',
-            legend_title_text='Cảm xúc',
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.write("Không có dữ liệu xác suất để hiển thị.")
-
-# --- Giao diện Chính của Ứng dụng ---
-st.title("📊 Web App Phân Tích Cảm Xúc Phản Hồi Khách Hàng")
-st.markdown("""
-Chào mừng bạn đến với ứng dụng phân tích cảm xúc!
-Ứng dụng này sử dụng mô hình học sâu (Deep Learning) dựa trên *Transformers* để dự đoán cảm xúc
-(**Tích cực**, **Tiêu cực**, **Trung tính**) từ văn bản phản hồi của khách hàng.
-""")
-
-# --- Kiểm tra Model đã tải được chưa ---
-if predictor is None:
-    st.warning("Model chưa sẵn sàng. Vui lòng kiểm tra lỗi ở trên hoặc đợi quá trình tải hoàn tất.")
-    st.stop() # Dừng thực thi nếu model không tải được
+# --- Giao diện Chính ---
+st.title("🚀 Hệ thống Xử lý Phản hồi Khách hàng (Lai ghép AI)")
+st.markdown("Nhập phản hồi hoặc tải file CSV. Hệ thống sẽ dùng model local và gọi AI (Gemini) khi cần thiết.")
 
 # --- Các Tab chức năng ---
-tab1, tab2, tab3 = st.tabs(["🔍 Phân tích Văn bản Đơn lẻ", "📄 Phân tích File CSV", "📈 Đánh giá Model"])
+tab1, tab2, tab3 = st.tabs(["📝 Xử lý Đơn lẻ", "📂 Xử lý Hàng loạt (CSV)", "📈 Thông tin Model XLM-R"])
 
-# --- Tab 1: Phân tích Đơn lẻ ---
+
+# --- Tab 1: Xử lý Đơn lẻ ---
+# Đảm bảo khối này có nội dung thụt vào
 with tab1:
-    st.header("Nhập phản hồi cần phân tích:")
-    user_input = st.text_area("Nhập văn bản vào đây...", height=150, key="single_text_input", placeholder="Ví dụ: Chất lượng sản phẩm rất tốt, tôi rất hài lòng!")
+    st.header("Nhập phản hồi cần xử lý:")
+    user_input = st.text_area("Nhập văn bản...", height=150, key="single_hybrid", placeholder="Ví dụ: Sản phẩm tốt nhưng giao hàng hơi chậm.")
 
-    if st.button("🚀 Phân tích Ngay!", key="analyze_single"):
+    if st.button("🚀 Xử lý Ngay!", key="analyze_single_hybrid"):
         if user_input and user_input.strip():
             start_time = time.time()
-            # Hiển thị spinner trong khi chờ dự đoán
-            with st.spinner('🧠 Đang phân tích, vui lòng chờ...'):
-                label, confidence, probabilities = predictor.predict_single(user_input)
+            with st.spinner('🧠 Đang xử lý...'):
+                api_response = None; error_message = None
+                try:
+                    response = requests.post(BACKEND_API_URL, json={"comment": user_input}, timeout=120)
+                    response.raise_for_status(); api_response = response.json()
+                except requests.exceptions.RequestException as e: error_message = f"Lỗi kết nối API Backend ({BACKEND_API_URL}): {e}"
+                except json.JSONDecodeError: error_message = f"Lỗi đọc JSON từ API. Status: {response.status_code}. Response: {response.text[:500]}"
+                except Exception as e: error_message = f"Lỗi không xác định: {e}"; traceback.print_exc()
+
             end_time = time.time()
 
-            if label is not None:
-                st.subheader("Kết quả Phân tích:")
-                col1, col2 = st.columns([1, 2]) # Chia cột để hiển thị gọn hơn
-                with col1:
-                    # Hiển thị nhãn với màu sắc tương ứng
-                    if label == config.LABEL_MAP[2]: # Tích cực
-                        st.success(f"**Cảm xúc:** {label}")
-                    elif label == config.LABEL_MAP[0]: # Tiêu cực
-                        st.error(f"**Cảm xúc:** {label}")
-                    else: # Trung tính hoặc khác
-                        st.warning(f"**Cảm xúc:** {label}")
-                    # Hiển thị độ tin cậy dạng %
-                    st.metric(label="Độ tin cậy", value=f"{confidence:.2%}")
-                    st.caption(f"Thời gian xử lý: {end_time - start_time:.2f} giây")
+            if error_message:
+                st.error(error_message)
+                st.info("Mẹo: Đảm bảo server API Backend (uvicorn api:app --reload) đang chạy và không có lỗi.")
+            elif api_response:
+                st.subheader("Kết quả Xử lý:")
+                total_time = (end_time - start_time) * 1000
+                api_time = api_response.get('processing_time_ms')
+                ai_reason = api_response.get('ai_call_reason', 'N/A')
 
-                with col2:
-                    # Hiển thị biểu đồ tròn xác suất
-                    display_probabilities_pie(probabilities)
+                col_res1, col_res2 = st.columns(2)
+                with col_res1:
+                    st.markdown("**Phân tích Cảm xúc (Model Local):**")
+                    sentiment = api_response.get('sentiment', 'N/A')
+                    confidence = api_response.get('confidence')
+                    try: # Tô màu
+                        label_map = getattr(config, 'TARGET_LABEL_MAP', {}) # Lấy map từ config an toàn
+                        positive_label = label_map.get(2, "Tích cực")
+                        negative_label = label_map.get(0, "Tiêu cực")
+                        if sentiment == positive_label: st.success(f"**Cảm xúc:** {sentiment}")
+                        elif sentiment == negative_label: st.error(f"**Cảm xúc:** {sentiment}")
+                        else: st.warning(f"**Cảm xúc:** {sentiment}")
+                    except Exception: st.write(f"**Cảm xúc:** {sentiment}")
+
+                    if confidence is not None: st.metric(label="Độ tin cậy", value=f"{confidence:.2%}")
+                    st.caption(f"Tổng T.gian: {total_time:.0f}ms | API T.gian: {api_time:.0f}ms" if api_time else f"Tổng T.gian: {total_time:.0f}ms")
+                    st.caption(f"Lý do gọi AI: {ai_reason}")
+
+                with col_res2:
+                    st.markdown("**Gợi ý Phản hồi Tự động (AI):**")
+                    generated_response = api_response.get('generated_response')
+                    if generated_response and "Lỗi" not in generated_response and "chưa cấu hình" not in generated_response:
+                        st.text_area("Nội dung:", value=generated_response, height=150, key="gen_resp_area_h", disabled=False, help="Bạn có thể chỉnh sửa nội dung này trước khi sử dụng.")
+                    else:
+                        st.info(generated_response or "Không có gợi ý phản hồi.")
+
+                st.markdown("---")
+                st.markdown("**Gợi ý Hành động Nội bộ (AI):**")
+                suggestions = api_response.get('suggestions')
+                if suggestions and not any("Lỗi" in s or "chưa cấu hình" in s for s in suggestions):
+                    for i, suggestion in enumerate(suggestions): st.markdown(f"{i+1}. {suggestion}")
+                else:
+                    st.info(suggestions[0] if suggestions else "Không có gợi ý hành động.")
             else:
-                st.error("⚠️ Có lỗi xảy ra trong quá trình dự đoán hoặc đầu vào không hợp lệ. Vui lòng thử lại.")
+                 st.error("Không nhận được phản hồi hợp lệ từ API.")
         else:
-            st.warning("⚠️ Vui lòng nhập văn bản để phân tích.")
+            st.warning("⚠️ Vui lòng nhập văn bản.")
 
-# --- Tab 2: Phân tích Hàng loạt (CSV) ---
+
+# --- Tab 2: Xử lý Hàng loạt (CSV) ---
+# Đảm bảo khối này có nội dung thụt vào
 with tab2:
-    st.header("Tải lên file CSV để phân tích hàng loạt:")
-    uploaded_file = st.file_uploader(
-        f"Chọn file CSV (phải có cột tên là '{config.TEXT_COLUMN}')",
-        type=["csv"],
-        key="csv_uploader",
-        help=f"File CSV của bạn cần có ít nhất một cột chứa văn bản phản hồi. Hãy đảm bảo tên cột đó là '{config.TEXT_COLUMN}' như đã cấu hình."
-    )
+    st.header("Tải lên file CSV để xử lý hàng loạt (Lai ghép):")
+    # Lấy tên cột an toàn từ config
+    text_col_name = getattr(config, 'TEXT_COLUMN', 'comment')
+    uploaded_file = st.file_uploader(f"Chọn file CSV (cột '{text_col_name}')", type=["csv"], key="csv_hybrid", help=f"Cột '{text_col_name}' sẽ được xử lý.")
+
+    col_limit1, col_limit2 = st.columns([1, 3])
+    with col_limit1:
+        limit_enabled = st.checkbox("Giới hạn số dòng?", key="limit_checkbox", value=False)
+    with col_limit2:
+        limit_rows_hybrid = st.number_input(
+            "Số dòng muốn xử lý tính từ đầu file:", min_value=1, value=50, step=10,
+            key="limit_rows_input_conditional", disabled=not limit_enabled,
+            help="Tick vào ô bên cạnh để bật giới hạn."
+        )
 
     if uploaded_file is not None:
         try:
-            with st.spinner("Đang đọc file CSV..."):
-                # Cố gắng đọc với encoding utf-8-sig để xử lý BOM nếu có
-                try:
-                    df = pd.read_csv(uploaded_file, encoding='utf-8-sig')
-                except UnicodeDecodeError:
-                    st.warning("Không thể đọc bằng UTF-8-SIG, thử UTF-8...")
-                    df = pd.read_csv(uploaded_file, encoding='utf-8')
+            with st.spinner("Đang đọc CSV..."):
+                try: df = pd.read_csv(uploaded_file, encoding='utf-8-sig', low_memory=False)
+                except: df = pd.read_csv(uploaded_file, encoding='utf-8', low_memory=False)
+            st.success(f"✅ Đã tải file '{uploaded_file.name}' ({len(df)} dòng).")
+            if text_col_name not in df.columns:
+                st.error(f"Lỗi: Không tìm thấy cột '{text_col_name}'."); st.stop()
 
-            st.success(f"✅ Đã tải lên file '{uploaded_file.name}' với {len(df)} dòng.")
+            if st.button("📊 Xử lý File CSV (Lai ghép)", key="analyze_csv_hybrid"):
+                if limit_enabled:
+                    process_df = df.head(limit_rows_hybrid)
+                    limit_info = f"{limit_rows_hybrid} dòng đầu tiên"
+                    if limit_rows_hybrid <= 0:
+                         st.warning("Số dòng giới hạn phải > 0. Đang xử lý 10 dòng đầu."); limit_rows_hybrid = 10; process_df = df.head(10); limit_info = "10 dòng đầu tiên (đã sửa)"
+                else:
+                    process_df = df; limit_info = "tất cả các dòng"
 
-            # Kiểm tra xem cột text có tồn tại không
-            if config.TEXT_COLUMN not in df.columns:
-                st.error(f"Lỗi: Không tìm thấy cột '{config.TEXT_COLUMN}' trong file CSV đã tải lên.")
-                st.info(f"Vui lòng đảm bảo file CSV của bạn có cột tên chính xác là '{config.TEXT_COLUMN}'.")
-            else:
-                # Hiển thị bản xem trước
-                st.write("Xem trước dữ liệu (5 dòng đầu):")
-                st.dataframe(df.head(), use_container_width=True)
+                total_to_process = len(process_df)
+                if total_to_process == 0: st.warning("Không có dòng nào để xử lý.")
+                else:
+                    st.info(f"Bắt đầu xử lý {limit_info}...")
+                    results_list = [] ; error_count = 0 ; ai_call_count = 0
+                    start_batch_time = time.time()
+                    progress_text = f"Đang xử lý 0/{total_to_process} dòng..."
+                    progress_bar = st.progress(0, text=progress_text)
 
-                if st.button("📊 Phân tích File CSV", key="analyze_csv"):
-                    start_time = time.time()
-                    progress_bar = st.progress(0, text="Bắt đầu phân tích...") # Thêm thanh tiến trình
-                    status_text = st.empty() # Vị trí để cập nhật trạng thái
-
-                    # Hàm callback để cập nhật tiến trình (ví dụ, nếu predict_batch_df hỗ trợ)
-                    # Hiện tại, chúng ta sẽ mô phỏng tiến trình
-                    results_df = None
-                    total_rows = len(df)
-                    try:
-                        # --- Bắt đầu dự đoán ---
-                        # Lưu ý: predict_batch_df trong ví dụ hiện tại xử lý từng dòng,
-                        # nên việc cập nhật progress bar chính xác cần sửa đổi hàm đó
-                        # Ở đây, chúng ta chỉ hiển thị spinner và thông báo chung
-                        with st.spinner(f"⏳ Đang phân tích cột '{config.TEXT_COLUMN}'... Quá trình này có thể mất vài phút."):
-                             results_df = predictor.predict_batch_df(df.copy(), config.TEXT_COLUMN)
-                             # Giả lập hoàn thành progress bar sau khi xong
-                             progress_bar.progress(100, text="Phân tích hoàn tất!")
-
-                    except Exception as batch_error:
-                         st.error(f"Lỗi nghiêm trọng trong quá trình phân tích hàng loạt: {batch_error}")
-                         progress_bar.progress(100, text="Phân tích thất bại!") # Cập nhật thanh tiến trình khi lỗi
-
-
-                    end_time = time.time()
-
-                    if results_df is not None:
-                        st.success(f"✅ Phân tích hoàn tất sau {end_time - start_time:.2f} giây!")
-
-                        # Hiển thị Thống kê Tổng hợp
-                        st.subheader("Thống kê Cảm xúc Tổng hợp:")
-                        # Đảm bảo xử lý trường hợp cột dự đoán không tồn tại hoặc rỗng
-                        if 'predicted_label' in results_df.columns and not results_df['predicted_label'].empty:
-                            sentiment_counts = results_df['predicted_label'].value_counts()
-                            # Đảm bảo dùng đúng tên nhãn từ config
-                            valid_labels = list(config.LABEL_MAP.values()) + ["Lỗi Dự đoán"] # Bao gồm cả nhãn lỗi
-                            sentiment_counts = sentiment_counts.reindex(valid_labels, fill_value=0) # Đảm bảo đủ 3 nhãn + lỗi
-
-                            color_map_stats = {"Tiêu cực": '#DC143C', "Trung tính": '#FFD700', "Tích cực": '#32CD32', "Lỗi Dự đoán": '#808080'}
-                            colors_stats = [color_map_stats.get(label, '#808080') for label in sentiment_counts.index]
-
-
-                            fig_bar = px.bar(
-                                sentiment_counts,
-                                x=sentiment_counts.index,
-                                y=sentiment_counts.values,
-                                labels={'x': 'Cảm xúc', 'y': 'Số lượng'},
-                                title='Phân phối Số lượng Cảm xúc',
-                                color=sentiment_counts.index,
-                                color_discrete_map=color_map_stats,
-                                text=sentiment_counts.values
-                            )
-                            fig_bar.update_layout(showlegend=False)
-
-                            # Chỉ vẽ pie chart nếu có dữ liệu hợp lệ (không chỉ có lỗi)
-                            valid_counts = sentiment_counts.drop("Lỗi Dự đoán", errors='ignore') # Bỏ qua nhãn lỗi
-                            if valid_counts.sum() > 0:
-                                fig_pie = go.Figure(data=[go.Pie(
-                                    labels=valid_counts.index,
-                                    values=valid_counts.values,
-                                    hole=.3,
-                                    marker_colors=[color_map_stats.get(label, '#808080') for label in valid_counts.index],
-                                )])
-                                fig_pie.update_layout(title_text='Tỷ lệ Phần trăm Cảm xúc (Không tính lỗi)')
-                            else:
-                                fig_pie = None # Không vẽ pie nếu toàn lỗi
-
-                            col_stats1, col_stats2 = st.columns(2)
-                            with col_stats1:
-                                st.plotly_chart(fig_bar, use_container_width=True)
-                            with col_stats2:
-                                if fig_pie:
-                                     st.plotly_chart(fig_pie, use_container_width=True)
-                                else:
-                                     st.info("Không có dữ liệu cảm xúc hợp lệ để vẽ biểu đồ tròn.")
-                        else:
-                             st.warning("Không tìm thấy cột 'predicted_label' hoặc không có kết quả để thống kê.")
-
-                        # Hiển thị Kết quả Chi tiết (có thể phân trang hoặc giới hạn nếu cần)
-                        st.subheader("Kết quả Chi tiết:")
-                        # Tùy chọn: Giới hạn số dòng hiển thị ban đầu
-                        # st.dataframe(results_df.head(100), use_container_width=True)
-                        # if len(results_df) > 100:
-                        #    st.caption(f"Hiển thị 100/{len(results_df)} dòng đầu tiên.")
-                        st.dataframe(results_df, use_container_width=True)
-
-                        # Thêm nút tải xuống
-                        @st.cache_data # Cache việc chuyển đổi DF sang CSV
-                        def convert_df_to_csv(df_to_convert):
+                    for index, row in process_df.iterrows():
+                        comment_text = str(row[text_col_name]) if pd.notna(row[text_col_name]) else ""
+                        result_row = {"original_comment": comment_text, "sentiment": None, "ai_call_reason": None, "status": None} # Chỉ lưu cái cần
+                        if comment_text:
                             try:
-                                # Sử dụng encoding utf-8-sig để Excel đọc tiếng Việt tốt hơn
-                                return df_to_convert.to_csv(index=False).encode('utf-8-sig')
-                            except Exception as e:
-                                print(f"Lỗi khi chuyển đổi DataFrame sang CSV: {e}")
-                                return None
+                                response = requests.post(BACKEND_API_URL, json={"comment": comment_text}, timeout=180)
+                                response.raise_for_status()
+                                api_data = response.json()
+                                result_row['sentiment'] = api_data.get('sentiment')
+                                ai_reason = api_data.get('ai_call_reason', '')
+                                result_row['ai_call_reason'] = ai_reason
+                                if ai_reason and "Độ tin cậy cao" not in ai_reason and "Không thuộc TH đặc biệt" not in ai_reason:
+                                    ai_call_count += 1
+                                result_row['status'] = 'Thành công'
+                            except requests.exceptions.Timeout: result_row['status'] = 'Lỗi API: Timeout'; error_count += 1
+                            except requests.exceptions.RequestException as e: result_row['status'] = f'Lỗi API: {type(e).__name__}'; error_count += 1
+                            except Exception as e: result_row['status'] = f'Lỗi khác: {type(e).__name__}'; error_count += 1
+                        else: result_row['status'] = 'Bỏ qua (rỗng)'
+                        results_list.append(result_row)
+                        progress_percentage = (index + 1) / total_to_process
+                        progress_text = f"Đang xử lý {index + 1}/{total_to_process} dòng..."
+                        progress_bar.progress(progress_percentage, text=progress_text)
 
-                        csv_output = convert_df_to_csv(results_df)
-                        if csv_output:
-                            st.download_button(
-                                label="📥 Tải xuống Kết quả (CSV)",
-                                data=csv_output,
-                                file_name=f'phan_tich_cam_xuc_{uploaded_file.name}.csv', # Tên file tiếng Việt
-                                mime='text/csv',
-                            )
-                        else:
-                            st.error("Không thể tạo file CSV để tải xuống.")
+                    end_batch_time = time.time()
+                    progress_bar.empty()
+                    st.success(f"✅ Xử lý {total_to_process} dòng hoàn tất sau {end_batch_time - start_batch_time:.2f} giây.")
 
-                    # Không cần else ở đây vì lỗi đã được xử lý trong khối try-except predict_batch_df
+                    if results_list:
+                        results_df = pd.DataFrame(results_list)
+                        st.markdown("---")
+                        st.subheader("📊 Thống kê Chung")
+                        # ... (Phần thống kê và nhận xét giữ nguyên như trước) ...
+                        col_stat1, col_stat2, col_stat3 = st.columns(3)
+                        with col_stat1: st.metric("Tổng số dòng xử lý", total_to_process)
+                        with col_stat2: st.metric("Số dòng gặp lỗi", error_count)
+                        with col_stat3: st.metric("Số dòng cần AI can thiệp", ai_call_count)
+                        if 'sentiment' in results_df.columns and not results_df['sentiment'].empty:
+                            valid_sentiments = results_df.dropna(subset=['sentiment'])
+                            sentiment_counts = valid_sentiments['sentiment'].value_counts()
+                            all_labels = list(getattr(config, 'TARGET_LABEL_MAP', {}).values())
+                            sentiment_counts = sentiment_counts.reindex(all_labels, fill_value=0)
+                            color_map_stats = {"Tiêu cực": '#DC143C', "Trung tính": '#FFD700', "Tích cực": '#32CD32'}
+                            counts_to_plot = sentiment_counts[sentiment_counts.index.isin(color_map_stats.keys())]
+                            if not counts_to_plot.empty:
+                                 st.markdown("---")
+                                 st.subheader("📈 Phân phối & Nhận xét Cảm xúc")
+                                 col_chart, col_commentary = st.columns([2, 1])
+                                 with col_chart:
+                                     fig_bar_batch = px.bar(counts_to_plot, x=counts_to_plot.index, y=counts_to_plot.values, labels={'x': 'Cảm xúc', 'y': 'Số lượng'}, color=counts_to_plot.index, color_discrete_map=color_map_stats, text=counts_to_plot.values, height=350)
+                                     fig_bar_batch.update_layout(showlegend=False, title_text="Biểu đồ Cảm xúc", title_x=0.5)
+                                     st.plotly_chart(fig_bar_batch, use_container_width=True)
+                                 with col_commentary:
+                                     st.subheader("📝 Nhận xét")
+                                     total_valid = counts_to_plot.sum()
+                                     if total_valid > 0:
+                                         pos_count = counts_to_plot.get("Tích cực", 0); neg_count = counts_to_plot.get("Tiêu cực", 0); neu_count = counts_to_plot.get("Trung tính", 0)
+                                         positive_perc = (pos_count / total_valid) * 100; negative_perc = (neg_count / total_valid) * 100; neutral_perc = (neu_count / total_valid) * 100
+                                         st.markdown(f"- **Tích cực:** {pos_count} ({positive_perc:.1f}%)")
+                                         st.markdown(f"- **Trung tính:** {neu_count} ({neutral_perc:.1f}%)")
+                                         st.markdown(f"- **Tiêu cực:** {neg_count} ({negative_perc:.1f}%)")
+                                         st.markdown("---")
+                                         if positive_perc >= 65: st.success("**Xu hướng:** Rất tích cực!"); st.markdown("**Gợi ý:** Phát huy điểm mạnh.")
+                                         elif negative_perc >= 35: st.error("**Xu hướng:** Cần cải thiện!"); st.markdown("**Gợi ý:** Phân tích kỹ bình luận tiêu cực.")
+                                         elif negative_perc >= 20: st.warning("**Xu hướng:** Có điểm cần chú ý."); st.markdown("**Gợi ý:** Xem xét phản hồi tiêu cực/trung tính.")
+                                         else: st.info("**Xu hướng:** Cân bằng."); st.markdown("**Gợi ý:** Duy trì và theo dõi.")
+                                         st.caption(f"(Trên {total_valid} phản hồi hợp lệ)")
+                                     else: st.info("Không đủ dữ liệu nhận xét.")
+                            else: st.info("Không có dữ liệu cảm xúc hợp lệ.")
+                        else: st.warning("Không có dữ liệu cảm xúc để thống kê.")
 
-        except UnicodeDecodeError:
-            st.error("Lỗi: Không thể đọc file CSV. File có thể không được mã hóa đúng dạng UTF-8. Vui lòng kiểm tra và lưu lại file với mã hóa UTF-8.")
-        except pd.errors.EmptyDataError:
-             st.error("Lỗi: File CSV bị rỗng hoặc không có dữ liệu.")
+                        # --- Nút Tải xuống ---
+                        st.markdown("---"); st.subheader("💾 Tải xuống Kết quả")
+                        @st.cache_data
+                        def convert_minimal_batch_df(df_to_convert):
+                            cols_to_save = ["original_comment", "sentiment", "confidence", "ai_call_reason", "status"]
+                            existing_cols = [col for col in cols_to_save if col in df_to_convert.columns]
+                            try: return df_to_convert[existing_cols].to_csv(index=False, encoding='utf-8-sig')
+                            except: return None
+                        csv_minimal_output = convert_minimal_batch_df(results_df)
+                        if csv_minimal_output: st.download_button(label="📥 Tải Kết quả Xử lý (CSV)", data=csv_minimal_output, file_name=f'ket_qua_xu_ly_{uploaded_file.name}.csv', mime='text/csv')
+                        else: st.error("Lỗi tạo file CSV.")
+
         except Exception as e:
-            st.error(f"⚠️ Lỗi không xác định khi xử lý file CSV: {e}")
-            st.warning("Hãy đảm bảo file CSV của bạn hợp lệ.")
+            st.error(f"⚠️ Lỗi khi xử lý file CSV: {e}")
+            traceback.print_exc()
 
 
-# --- Tab 3: Đánh giá Model ---
+# --- Tab 3: Thông tin Model ---
+# Đảm bảo khối này có nội dung thụt vào
 with tab3:
-    st.header("Thông tin Đánh giá Model")
-    st.markdown("Kết quả đánh giá hiệu năng của model trên tập dữ liệu kiểm thử (test set):")
+    st.header("Thông tin Đánh giá Model (XLM-RoBERTa)")
+    st.markdown("Kết quả đánh giá hiệu năng trên tập dữ liệu kiểm thử (test set).")
 
-    # Tải và hiển thị các chỉ số từ file báo cáo
-    report_path = config.CLASSIFICATION_REPORT_FILE
-    cm_path = config.CONFUSION_MATRIX_FILE
-    curves_path = config.TRAINING_CURVES_FILE
+    # Lấy đường dẫn an toàn từ config
+    summary_path = getattr(config, 'EVALUATION_SUMMARY_FILE', None)
+    cm_path = getattr(config, 'CONFUSION_MATRIX_FILE', None)
+    curves_path = getattr(config, 'TRAINING_CURVES_FILE', None)
+    error_path = getattr(config, 'ERROR_ANALYSIS_FILE', None)
+    report_path = getattr(config, 'CLASSIFICATION_REPORT_FILE', None) # Thêm report path
 
-    if os.path.exists(report_path):
+    summary_data = None
+    # Đọc summary JSON
+    if summary_path and os.path.exists(summary_path):
         try:
-            with open(report_path, 'r', encoding='utf-8') as f: # Thêm encoding='utf-8'
-                lines = f.readlines()
-                accuracy_line = next((line for line in lines if "Độ chính xác trên tập Test:" in line), None) # Tìm dòng accuracy tiếng Việt
-                accuracy = float(accuracy_line.split(":")[1].strip()) if accuracy_line else None
-
-                report_content = "".join(lines) # Lấy toàn bộ nội dung báo cáo
-
-            col_metric1, col_metric2 = st.columns(2)
-            with col_metric1:
-                 if accuracy is not None:
-                    # Hiển thị accuracy dưới dạng metric
-                    st.metric("Accuracy Tổng thể (trên tập Test)", f"{accuracy:.2%}")
-                 else:
-                     st.info("Không tìm thấy thông tin Accuracy trong file báo cáo.")
-            # Bạn có thể thêm các metric khác nếu parse được từ report (ví dụ F1-score)
-            # with col_metric2:
-            #    st.metric("F1-score (Weighted - nếu có)", "...")
-
-            st.subheader("Báo cáo Phân loại Chi tiết:")
-            st.text(report_content) # Hiển thị nội dung file report
-
-        except FileNotFoundError:
-             st.warning(f"Không tìm thấy file báo cáo phân loại tại: {report_path}")
-        except Exception as e:
-            st.warning(f"Không thể đọc hoặc phân tích file báo cáo ({report_path}): {e}")
+            with open(summary_path, 'r', encoding='utf-8') as f: summary_data = json.load(f)
+        except Exception as e: st.warning(f"Lỗi đọc summary: {e}"); summary_data = {}
     else:
-        st.info(f"Chưa có file đánh giá ({report_path}). Hãy chạy script `python evaluate.py` trước.")
+        st.info(f"Chưa có file tóm tắt ({summary_path or 'đường dẫn chưa cấu hình'}). Chạy evaluate.py."); summary_data = {}
 
-    # Hiển thị Ma trận Nhầm lẫn
-    st.subheader("Ma trận Nhầm lẫn (Confusion Matrix):")
-    if os.path.exists(cm_path):
-        try:
-             st.image(cm_path, caption="Ma trận Nhầm lẫn trên tập Test")
-        except Exception as e:
-             st.warning(f"Không thể tải ảnh ma trận nhầm lẫn ({cm_path}): {e}")
-    else:
-        st.info(f"Chưa có ảnh ma trận nhầm lẫn ({cm_path}). Hãy chạy script `python evaluate.py`.")
+    # Hiển thị Metrics
+    st.subheader("📈 Chỉ số Hiệu năng Chính")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1: acc = summary_data.get('test_accuracy'); st.metric("Accuracy", f"{acc:.2%}" if acc is not None else "N/A")
+    with col2: f1_w = summary_data.get('weighted_f1'); st.metric("F1 (Weighted)", f"{f1_w:.4f}" if f1_w is not None else "N/A")
+    with col3: f1_m = summary_data.get('macro_f1'); st.metric("F1 (Macro)", f"{f1_m:.4f}" if f1_m is not None else "N/A")
+    with col4: loss = summary_data.get('test_loss'); st.metric("Loss (Test)", f"{loss:.4f}" if loss is not None else "N/A", delta_color="inverse")
 
-    # Hiển thị Biểu đồ Huấn luyện
-    st.subheader("Biểu đồ Quá trình Huấn luyện:")
-    if os.path.exists(curves_path):
+    # Hiển thị Report
+    st.subheader("📊 Báo cáo Phân loại")
+    report_display = summary_data.get('classification_report_text')
+    if report_display:
+         st.text(report_display)
+    elif report_path and os.path.exists(report_path): # Thử đọc từ file text nếu summary không có
          try:
-            st.image(curves_path, caption="Biểu đồ Loss và Accuracy trong quá trình Huấn luyện/Kiểm định")
-         except Exception as e:
-             st.warning(f"Không thể tải ảnh biểu đồ huấn luyện ({curves_path}): {e}")
+             with open(report_path, 'r', encoding='utf-8') as f: st.text(f.read())
+         except Exception as e: st.warning(f"Lỗi đọc report text: {e}")
     else:
-        st.info(f"Chưa có ảnh biểu đồ huấn luyện ({curves_path}). Hãy chạy script `train.py` và `evaluate.py`.")
+         st.info("Không tìm thấy dữ liệu báo cáo.")
+
+    # Hiển thị CM
+    st.subheader("❓ Ma trận Nhầm lẫn")
+    col_cm1, col_cm2 = st.columns([2,1])
+    with col_cm1:
+        if cm_path and os.path.exists(cm_path):
+            try: st.image(cm_path, caption="Ma trận Nhầm lẫn")
+            except Exception as e: st.warning(f"Lỗi tải ảnh CM: {e}")
+        else: st.info(f"Chưa có ảnh CM ({cm_path or 'đường dẫn chưa cấu hình'}).")
+    with col_cm2:
+        st.markdown("**Cách đọc:** Đường chéo chính là đúng.")
+        if 'confusion_matrix' in summary_data and 'TARGET_LABEL_MAP' in dir(config):
+             cm_list = summary_data['confusion_matrix']; labels_cm = list(config.TARGET_LABEL_MAP.values())
+             st.write("**Lỗi chính:**")
+             try:
+                 for i, true_label in enumerate(labels_cm):
+                     for j, pred_label in enumerate(labels_cm):
+                         if i < len(cm_list) and j < len(cm_list[i]) and i != j and cm_list[i][j] > 0:
+                              st.caption(f"- {cm_list[i][j]} '{true_label}' -> '{pred_label}'")
+             except Exception as e: print(f"Lỗi phân tích CM: {e}")
+
+    # Hiển thị Curves
+    st.subheader("📉 Biểu đồ Huấn luyện")
+    if curves_path and os.path.exists(curves_path):
+         try: st.image(curves_path, caption="Loss & Accuracy")
+         except Exception as e: st.warning(f"Lỗi tải ảnh curves: {e}")
+    else: st.info(f"Chưa có ảnh biểu đồ ({curves_path or 'đường dẫn chưa cấu hình'}).")
+
+    # Hiển thị Error Analysis
+    st.subheader("🚫 Phân tích Lỗi")
+    if error_path and os.path.exists(error_path):
+        try:
+            error_df = pd.read_csv(error_path)
+            st.write(f"Tổng cộng **{len(error_df)}** mẫu sai.")
+            if not error_df.empty: st.dataframe(error_df.head(20))
+            # ... (nút tải file lỗi giữ nguyên) ...
+            @st.cache_data
+            def convert_error_df(df):
+                 try: return df.to_csv(index=False).encode('utf-8-sig')
+                 except: return None
+            csv_errors = convert_error_df(error_df)
+            if csv_errors: st.download_button(label="📥 Tải file lỗi (CSV)", data=csv_errors, file_name="error_analysis.csv", mime="text/csv")
+
+        except Exception as e: st.warning(f"Lỗi đọc file lỗi ({error_path}): {e}")
+    else: st.info(f"Chưa có file phân tích lỗi ({error_path or 'đường dẫn chưa cấu hình'}).")
 
 
 # --- Footer ---
 st.markdown("---")
-st.caption("Dự án Thực tập 8 Tuần - Phân tích Cảm xúc - Xây dựng bởi Nguyễn Trần Hoàng Thịnh")
+st.caption("Dự án Thực tập - Xử lý Phản hồi Khách hàng (Lai ghép) - [Tên của bạn]")
