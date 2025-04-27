@@ -162,6 +162,7 @@ visualizations/
 # **TUYỆT ĐỐI KHÔNG** commit API keys, mật khẩu, hoặc thông tin nhạy cảm khác.
 # Sử dụng biến môi trường hoặc các cơ chế quản lý cấu hình an toàn khác.
 *.envrc
+.env
 secrets.yaml
 secrets.json
 config.prod.py
