@@ -1,4 +1,4 @@
-# requirements.txt (Phiên bản cuối)
+# requirements.txt (Kiểm tra lại)
 
 torch
 transformers>=4.18.0
