@@ -1,13 +1,7 @@
-# api.py (Phiên bản v1.3.2 - Luôn gọi Gemini, Logging chi tiết, Xử lý Edge Cases)
+# api.py (v1.4.4 - Rà soát cú pháp, tối ưu nhỏ)
 
-import time
-import os
-import traceback
-import logging
+import time, os, traceback, logging, asyncio, hashlib, json
 from dotenv import load_dotenv
-import asyncio
-
-# Tải biến môi trường từ file .env (nếu có)
 load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Request, Depends
@@ -15,66 +9,79 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 import uvicorn
 import google.generativeai as genai
+import mysql.connector
+from mysql.connector import Error as MySQLError, pooling
 
-# Import các thành phần cần thiết từ dự án
-import config
+import config # Đảm bảo config được import sau load_dotenv
 try:
     from predict import SentimentPredictor
     PREDICTOR_LOADED = True
 except ImportError:
     print("LỖI: Không tìm thấy module 'predict'. SentimentPredictor sẽ không hoạt động.")
-    SentimentPredictor = None # Đặt là None để kiểm tra sau
+    SentimentPredictor = None
     PREDICTOR_LOADED = False
 
 # --- Cấu hình Logging ---
-log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - RID=%(request_id)s - %(message)s') # Thêm request_id vào format
-logger = logging.getLogger(__name__)
+log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - RID=%(request_id)s - %(message)s')
+logger = logging.getLogger("api_logger")
 logger.setLevel(logging.INFO)
-# Xóa handler cũ nếu có để tránh log trùng lặp khi reload
-if logger.hasHandlers():
-    logger.handlers.clear()
-# Handler mới
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(log_formatter)
-logger.addHandler(stream_handler)
-# Thêm filter để thêm request_id vào log record
+if logger.hasHandlers(): logger.handlers.clear()
+stream_handler = logging.StreamHandler(); stream_handler.setFormatter(log_formatter); logger.addHandler(stream_handler)
 class RequestIdFilter(logging.Filter):
-    def filter(self, record):
-        # Cố gắng lấy request_id từ task local hoặc context (cần xử lý cẩn thận trong async)
-        # Cách đơn giản hơn là truyền request_id vào logger khi gọi
-        record.request_id = getattr(record, 'request_id', 'N/A') # Gán mặc định nếu chưa có
-        return True
+    def filter(self, record): record.request_id = getattr(record, 'request_id', 'N/A'); return True
 logger.addFilter(RequestIdFilter())
 
-
-# --- Pydantic Models (Giữ nguyên) ---
+# --- Pydantic Models ---
 class SentimentRequest(BaseModel):
-    comment: str = Field(..., description="Bình luận cần phân tích.")
+    comment: str = Field(...)
     @field_validator('comment')
     @classmethod
-    def strip_comment(cls, value: str) -> str:
-        return value.strip()
+    def strip_comment(cls, v: str) -> str:
+        if isinstance(v, str): return v.strip() # Thêm kiểm tra kiểu
+        return v # Trả về nguyên gốc nếu không phải str
 
-class SentimentOnlyResponse(BaseModel):
-    sentiment: str = Field(...)
-    confidence: float | None = Field(None)
-    model_used: str = Field(...)
-    processing_time_ms: float | None = Field(None)
+class UnifiedResponse(BaseModel): # Dùng chung response model
+    sentiment: str | None = None # Cho phép None nếu có lỗi ban đầu
+    confidence: float | None = None
+    ai_call_reason: str | None = None
+    suggestions: list[str] | None = None
+    generated_response: str | None = None
+    processing_time_ms: float | None = None
+    source: str = Field(..., description="'cache', 'cache_enriched', 'new_sentiment_only', 'new_full_process', 'error'") # Thêm source 'error'
 
-class ProcessResponse(BaseModel):
-    sentiment: str = Field(...)
-    confidence: float | None = Field(None)
-    ai_call_reason: str | None = Field(None) # Vẫn giữ để biết AI được gọi
-    suggestions: list[str] | None = Field(None)
-    generated_response: str | None = Field(None)
-    processing_time_ms: float | None = Field(None)
-
-# --- Khởi tạo FastAPI App ---
+# --- FastAPI App ---
 app = FastAPI(
-    title="API Phân Tích & Xử Lý Phản Hồi v1.3.2",
-    description="Endpoints: `/sentiment` (nhanh, chỉ XLM-R) và `/process` (luôn gọi Gemini).",
-    version="1.3.2"
+    title="API Phân Tích & Xử Lý Phản Hồi v1.4.4 (MySQL KB)",
+    description="Endpoints: `/sentiment` (nhanh, đọc/lưu KB) và `/process` (AI, đọc/làm giàu KB).",
+    version="1.4.4"
 )
+
+# --- Quản lý Kết nối DB bằng Pooling ---
+db_pool = None
+db_connection_error = None
+
+def create_db_pool():
+    global db_pool, db_connection_error
+    required_db_configs = [config.MYSQL_HOST, config.MYSQL_USER, config.MYSQL_PASSWORD, config.MYSQL_DATABASE]
+    if not all(required_db_configs):
+        db_connection_error = "Thiếu thông tin cấu hình MySQL."; logger.error(f"DB Pool Error: {db_connection_error}"); return False
+    try: logger.info("Tạo MySQL Pool..."); db_pool = mysql.connector.pooling.MySQLConnectionPool(pool_name="sentiment_pool", pool_size=5, pool_reset_session=True, host=config.MYSQL_HOST, port=config.MYSQL_PORT, user=config.MYSQL_USER, password=config.MYSQL_PASSWORD, database=config.MYSQL_DATABASE, connection_timeout=10); conn_test = db_pool.get_connection();
+    except MySQLError as e: db_connection_error = f"Lỗi MySQL Pool ({e.errno}): {e.msg}"; logger.error(f"Lỗi tạo MySQL Pool: {e}", exc_info=True); db_pool = None; return False
+    except Exception as e: db_connection_error = f"Lỗi không xác định Pool: {e}"; logger.error(f"Lỗi tạo Pool: {e}", exc_info=True); db_pool = None; return False
+    if conn_test and conn_test.is_connected(): logger.info(f"MySQL Pool OK cho DB '{config.MYSQL_DATABASE}'."); conn_test.close(); db_connection_error = None; return True
+    else: db_connection_error = "Không thể tạo kết nối từ Pool."; logger.error(db_connection_error); db_pool = None; return False
+
+async def get_db_connection():
+    if db_pool is None: logger.error("Yêu cầu DB nhưng Pool lỗi/chưa tạo."); raise HTTPException(503, f"Lỗi DB Pool: {db_connection_error or 'Chưa khởi tạo'}.")
+    connection = None; cursor = None; log_extra={'request_id': 'DB_CONN'}
+    try: connection = db_pool.get_connection();
+    except MySQLError as pool_err: logger.error(f"Lỗi lấy connection: {pool_err}", exc_info=True, extra=log_extra); raise HTTPException(503, f"Lỗi DB Pool: {pool_err.msg}")
+    if not connection or not connection.is_connected(): raise HTTPException(503, "Lỗi connection từ pool.")
+    try: cursor = connection.cursor(dictionary=True); logger.debug("Lấy connection DB OK.", extra=log_extra); yield connection, cursor
+    finally:
+        if cursor: cursor.close(); logger.debug("Đóng DB cursor.", extra=log_extra)
+        if connection and connection.is_connected(): connection.close(); logger.debug("Trả connection DB về pool.", extra=log_extra)
+
 
 # --- Tải Model và Cấu hình Dependencies ---
 predictor_instance: SentimentPredictor | None = None
@@ -82,246 +89,279 @@ gemini_configured = False
 model_load_error: str | None = None
 
 async def get_predictor():
-    if predictor_instance is None:
-        detail_msg = f"Model XLM-R chưa sẵn sàng. Lỗi: {model_load_error or 'Unknown'}"
-        logger.error(f"Dependency Error: {detail_msg}")
-        raise HTTPException(status_code=503, detail=detail_msg)
+    if predictor_instance is None: detail_msg = f"Model XLM-R lỗi: {model_load_error or 'Chưa tải'}"; logger.error(f"Dependency Error: {detail_msg}"); raise HTTPException(503, detail_msg)
     return predictor_instance
-
-async def check_gemini_config():
-    if not gemini_configured:
-        logger.warning("Dependency Error: Gemini API chưa cấu hình.")
-        raise HTTPException(status_code=501, detail="Chức năng Gemini chưa cấu hình (thiếu API Key?).")
-    return True
 
 @app.on_event("startup")
 async def startup_event():
-    # ... (Code startup event giữ nguyên như trước) ...
-    global predictor_instance, gemini_configured, model_load_error
-    logger.info("--- API Startup Event ---")
+    global predictor_instance, gemini_configured, model_load_error, db_pool, db_connection_error
+    log_extra = {'request_id': 'STARTUP'}
+    logger.info("--- API Startup Event ---", extra=log_extra)
     if PREDICTOR_LOADED:
-        logger.info(f"Đang tải model XLM-R từ: {config.MODEL_SAVE_PATH}")
+        logger.info(f"Tải XLM-R từ: {config.MODEL_SAVE_PATH}", extra=log_extra)
         start_time = time.time()
         try:
             predictor_instance = SentimentPredictor(model_path=config.MODEL_SAVE_PATH)
-            if not predictor_instance or not predictor_instance.model or not predictor_instance.label_map:
-                 model_load_error = f"Không thể khởi tạo Predictor từ '{config.MODEL_SAVE_PATH}'."
-                 logger.error(f"Lỗi tải model XLM-R: {model_load_error}")
-                 predictor_instance = None
-            else: logger.info(f"Model XLM-R tải xong sau {time.time() - start_time:.2f} giây.")
-        except Exception as e: model_load_error = str(e); logger.error(f"Lỗi nghiêm trọng khi tải model: {e}", exc_info=True); predictor_instance = None
-    else: model_load_error = "Module 'predict' hoặc class 'SentimentPredictor' không tìm thấy."; logger.error(model_load_error)
-    logger.info("Đang cấu hình Gemini API...")
+        except Exception as e:
+            model_load_error = str(e)
+            logger.error(f"Lỗi tải model: {e}", exc_info=True, extra=log_extra)
+            predictor_instance = None
+        if not predictor_instance or not predictor_instance.model or not predictor_instance.label_map:
+            model_load_error = f"Lỗi init Predictor từ '{config.MODEL_SAVE_PATH}'."
+            predictor_instance = None
+            logger.error(model_load_error if model_load_error else "Lỗi tải model", extra=log_extra)
+        else:
+            logger.info(f"Model XLM-R tải xong: {time.time() - start_time:.2f}s.", extra=log_extra)
+    else:
+        model_load_error = "Module 'predict' lỗi."
+        logger.error(model_load_error, extra=log_extra)
+    logger.info("Cấu hình Gemini...", extra=log_extra)
     if config.GEMINI_API_KEY:
-        try: genai.configure(api_key=config.GEMINI_API_KEY); gemini_configured = True; logger.info("Gemini API cấu hình thành công.")
-        except Exception as e: logger.error(f"Lỗi cấu hình Gemini API: {e}", exc_info=True); gemini_configured = False
-    else: logger.warning("GEMINI_API_KEY chưa đặt. Chức năng Gemini bị vô hiệu hóa."); gemini_configured = False
-    logger.info("--- API Startup Hoàn tất ---")
+        try:
+            genai.configure(api_key=config.GEMINI_API_KEY)
+            gemini_configured = True
+            logger.info("Gemini OK.", extra=log_extra)
+        except Exception as e:
+            logger.error(f"Lỗi cấu hình Gemini: {e}", exc_info=True, extra=log_extra)
+            gemini_configured = False
+    else:
+        logger.warning("GEMINI_API_KEY chưa đặt.", extra=log_extra)
+        gemini_configured = False
+    if not create_db_pool():
+        logger.error("!!! LỖI TẠO MYSQL POOL !!!", extra=log_extra)
+    logger.info("--- API Startup Hoàn tất ---", extra=log_extra)
+
+@app.on_event("shutdown")
+async def shutdown_event(): logger.info("--- API Shutdown ---"); logger.info("--- API Shutdown Hoàn tất ---")
+
 
 # --- Middleware ---
-# Tạo request ID đơn giản
-def generate_request_id():
-     return os.urandom(4).hex() # ID ngắn hơn
-
+def generate_request_id(): return os.urandom(4).hex()
 @app.middleware("http")
 async def add_process_time_header_and_handle_errors(request: Request, call_next):
-    request_id = request.headers.get("X-Request-ID", generate_request_id())
-    # Tạo extra dict để truyền request_id vào logger
-    log_extra = {'request_id': request_id}
-    logger.info(f"Nhận request: {request.method} {request.url.path}", extra=log_extra)
-    start_time = time.time()
-    try:
-        # Gán request_id vào state để các hàm khác có thể truy cập nếu cần (cẩn thận với async)
-        request.state.request_id = request_id
-        response = await call_next(request)
-        process_time = (time.time() - start_time) * 1000
-        response.headers["X-Process-Time-Ms"] = f"{process_time:.2f}"
-        response.headers["X-Request-ID"] = request_id
-        logger.info(f"Hoàn thành request: Status {response.status_code} trong {process_time:.2f} ms", extra=log_extra)
-        return response
-    except HTTPException as http_err:
-        logger.warning(f"HTTP Exception: {http_err.status_code} - {http_err.detail}", extra=log_extra)
-        raise http_err
+    request_id = request.headers.get("X-Request-ID", generate_request_id()); log_extra = {'request_id': request_id}; logger.info(f"Nhận request: {request.method} {request.url.path}", extra=log_extra)
+    start_time = time.time(); request.state.request_id = request_id
+    response = None # Khởi tạo response
+    try: response = await call_next(request)
     except Exception as e:
-        logger.error(f"Lỗi Server Nội bộ không mong muốn: {e}", exc_info=True, extra=log_extra)
-        return JSONResponse(
-            status_code=500,
-            content={"message": "Lỗi server nội bộ.", "request_id": request_id},
-            headers={"X-Request-ID": request_id}
-        )
+        logger.error(f"Lỗi Server Nội bộ: {e}", exc_info=True, extra=log_extra)
+        response = JSONResponse(status_code=500, content={"message": "Lỗi server nội bộ.", "request_id": request_id}) # Gán response lỗi
+
+    process_time = (time.time() - start_time) * 1000
+    # Thêm header vào response đã có
+    if response:
+         response.headers["X-Process-Time-Ms"] = f"{process_time:.2f}"
+         response.headers["X-Request-ID"] = request_id
+         try: status_code = response.status_code
+         except AttributeError: status_code = 'N/A' # Cho streaming response
+         logger.info(f"Hoàn thành request: Status {status_code} trong {process_time:.2f} ms", extra=log_extra)
+    else:
+         # Trường hợp hiếm hoi call_next không trả về response mà raise lỗi ko bắt được?
+         logger.error("Middleware không nhận được response từ call_next", extra=log_extra)
+         response = JSONResponse(status_code=500, content={"message": "Lỗi xử lý nội bộ middleware."}) # Trả về lỗi mặc định
+
+    return response
 
 
 # --- Hàm Gọi Gemini API ---
-# Thêm request_id vào log
+# ... (Giữ nguyên với logging và timeout) ...
 async def get_gemini_suggestions(comment: str, sentiment: str, request_id: str = "N/A") -> list[str]:
-    task_id = f"{request_id}-sugg"
-    log_extra = {'request_id': task_id} # Dùng ID riêng cho task
-    if not gemini_configured:
-        logger.warning("Bỏ qua gợi ý: Gemini chưa cấu hình.", extra=log_extra)
-        return ["Gemini chưa cấu hình."]
-    try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"""Phân tích bình luận và cảm xúc sau, đề xuất 3 hành động cho CSKH, dạng danh sách đánh số.
-Bình luận: "{comment}"
-Cảm xúc: {sentiment}
-Gợi ý hành động:"""
-        logger.info(f"Gửi yêu cầu gợi ý đến Gemini (Sentiment: {sentiment})", extra=log_extra)
-        start_gemini = time.time()
-        response = await asyncio.wait_for(model.generate_content_async(prompt), timeout=60.0)
-        logger.info(f"Nhận phản hồi gợi ý từ Gemini sau {time.time() - start_gemini:.2f} giây.", extra=log_extra)
-        suggestions_text = response.text.strip()
-        suggestions_list = [
-            line.strip().lstrip('0123456789.*- ').strip()
-            for line in suggestions_text.split('\n')
-            if line.strip() and len(line.strip().lstrip('0123456789.*- ').strip()) > 3
-        ]
-        return suggestions_list if suggestions_list else ["AI không đưa ra gợi ý cụ thể."]
-    except asyncio.TimeoutError:
-        logger.error(f"Lỗi gọi Gemini (get_suggestions): Timeout", extra=log_extra)
-        return ["Lỗi AI Suggestions: Timeout"]
-    except Exception as e:
-        logger.error(f"Lỗi gọi Gemini (get_suggestions): {e}", exc_info=True, extra=log_extra)
-        return [f"Lỗi AI Suggestions: {type(e).__name__}"]
+    task_id=f"{request_id}-sugg"; log_extra={'request_id': task_id}
+    if not gemini_configured: logger.warning("Bỏ qua gợi ý: Gemini chưa cấu hình.", extra=log_extra); return ["Gemini chưa cấu hình."]
+    try: model = genai.GenerativeModel('gemini-1.5-flash'); prompt = f"Phân tích bình luận và cảm xúc sau, đề xuất 3 hành động cho CSKH...\nBình luận: \"{comment}\"\nCảm xúc: {sentiment}\nGợi ý hành động:"
+    except Exception as model_err: logger.error(f"Lỗi init Gemini Model (sugg): {model_err}", exc_info=True, extra=log_extra); return [f"Lỗi AI Init: {type(model_err).__name__}"]
+    try: logger.info(f"Gửi yêu cầu gợi ý đến Gemini (Sentiment: {sentiment})", extra=log_extra); start_gemini = time.time(); response = await asyncio.wait_for(model.generate_content_async(prompt), timeout=60.0)
+    except asyncio.TimeoutError: logger.error(f"Lỗi gọi Gemini (get_suggestions): Timeout", extra=log_extra); return ["Lỗi AI Suggestions: Timeout"]
+    except Exception as e: logger.error(f"Lỗi gọi Gemini (get_suggestions): {e}", exc_info=True, extra=log_extra); return [f"Lỗi AI Suggestions: {type(e).__name__}"]
+    logger.info(f"Nhận gợi ý Gemini sau {time.time() - start_gemini:.2f}s.", extra=log_extra)
+    suggestions_text = response.text.strip(); suggestions_list = [line.strip().lstrip('0123456789.*- ').strip() for line in suggestions_text.split('\n') if line.strip() and len(line.strip().lstrip('0123456789.*- ').strip()) > 3]
+    return suggestions_list if suggestions_list else ["AI không đưa ra gợi ý cụ thể."]
 
 async def generate_gemini_response(comment: str, sentiment: str, internal_suggestions: list[str] | None, request_id: str = "N/A") -> str:
-    task_id = f"{request_id}-resp"
-    log_extra = {'request_id': task_id}
-    if not gemini_configured:
-        logger.warning("Bỏ qua tạo phản hồi: Gemini chưa cấu hình.", extra=log_extra)
-        return "Gemini chưa cấu hình."
+    task_id=f"{request_id}-resp"; log_extra={'request_id': task_id}
+    if not gemini_configured: logger.warning("Bỏ qua tạo phản hồi: Gemini chưa cấu hình.", extra=log_extra); return "Gemini chưa cấu hình."
+    try: model = genai.GenerativeModel('gemini-1.5-flash'); prompt_context = f"Là nhân viên CSKH, soạn phản hồi chuyên nghiệp...\nBình luận khách hàng: \"{comment}\"\nCảm xúc phân tích: {sentiment}";
+    except Exception as model_err: logger.error(f"Lỗi init Gemini Model (resp): {model_err}", exc_info=True, extra=log_extra); return f"Lỗi AI Init: {type(model_err).__name__}"
+    if internal_suggestions and isinstance(internal_suggestions, list) and not any("Lỗi" in s or "chưa cấu hình" in s for s in internal_suggestions): suggestions_text = "\n".join([f"- {s}" for s in internal_suggestions]); prompt_context += f"\nGợi ý hành động nội bộ (tham khảo): \n{suggestions_text}"
+    prompt_instruction = "\nViết nội dung phản hồi cho khách hàng:"; full_prompt = prompt_context + prompt_instruction
+    try: logger.info(f"Gửi yêu cầu tạo phản hồi đến Gemini (Sentiment: {sentiment})", extra=log_extra); start_gemini = time.time(); response = await asyncio.wait_for(model.generate_content_async(full_prompt), timeout=90.0)
+    except asyncio.TimeoutError: logger.error(f"Lỗi gọi Gemini (generate_response): Timeout", extra=log_extra); return "Lỗi tạo phản hồi AI: Timeout"
+    except Exception as e: logger.error(f"Lỗi gọi Gemini (generate_response): {e}", exc_info=True, extra=log_extra); return f"Lỗi tạo phản hồi AI: {type(e).__name__}"
+    logger.info(f"Nhận phản hồi tự động Gemini sau {time.time() - start_gemini:.2f}s.", extra=log_extra)
+    generated_text = response.text.strip(); return generated_text if generated_text else "AI không tạo ra phản hồi."
+
+
+# --- Hàm tương tác Knowledge Base (MySQL) ---
+# Sử dụng await asyncio.to_thread để chạy DB I/O không chặn
+async def get_kb_entry_async(comment_hash: str, db_tuple: tuple) -> dict | None:
+    connection, cursor = db_tuple; log_extra = {'request_id': 'KB_GET_ASYNC'}
+    if not cursor: logger.error("Lỗi DB Cursor (get).", extra=log_extra); return None
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt_context = f"""Là nhân viên CSKH, soạn phản hồi chuyên nghiệp, đồng cảm cho khách hàng.
-Bình luận khách hàng: "{comment}"
-Cảm xúc phân tích: {sentiment}"""
-        if internal_suggestions and isinstance(internal_suggestions, list) and not any("Lỗi" in s or "chưa cấu hình" in s for s in internal_suggestions):
-             suggestions_text = "\n".join([f"- {s}" for s in internal_suggestions])
-             prompt_context += f"\nGợi ý hành động nội bộ (tham khảo): \n{suggestions_text}"
-        prompt_instruction = "\nViết nội dung phản hồi cho khách hàng:"
-        full_prompt = prompt_context + prompt_instruction
-        logger.info(f"Gửi yêu cầu tạo phản hồi đến Gemini (Sentiment: {sentiment})", extra=log_extra)
-        start_gemini = time.time()
-        response = await asyncio.wait_for(model.generate_content_async(full_prompt), timeout=90.0)
-        logger.info(f"Nhận phản hồi tự động từ Gemini sau {time.time() - start_gemini:.2f} giây.", extra=log_extra)
-        generated_text = response.text.strip()
-        return generated_text if generated_text else "AI không tạo ra phản hồi."
-    except asyncio.TimeoutError:
-        logger.error(f"Lỗi gọi Gemini (generate_response): Timeout", extra=log_extra)
-        return "Lỗi tạo phản hồi AI: Timeout"
-    except Exception as e:
-        logger.error(f"Lỗi gọi Gemini (generate_response): {e}", exc_info=True, extra=log_extra)
-        return f"Lỗi tạo phản hồi AI: {type(e).__name__}"
+        query = "SELECT sentiment, confidence, suggestions, generated_response FROM knowledge_base WHERE comment_hash = %s"
+        def db_query(): # Hàm để chạy trong thread
+            cursor.execute(query, (comment_hash,))
+            return cursor.fetchone()
+        result = await asyncio.to_thread(db_query) # Chạy trong thread
+
+        if result:
+            if result.get('suggestions'):
+                 try: result['suggestions'] = json.loads(result['suggestions']) if result['suggestions'] else None
+                 except: result['suggestions'] = ["Lỗi parse suggestions"] # Gán giá trị mặc định nếu lỗi parse
+            logger.info(f"Tìm thấy KB entry: {comment_hash}", extra=log_extra)
+            return result
+        logger.debug(f"Không tìm thấy KB entry: {comment_hash}", extra=log_extra)
+        return None
+    except MySQLError as e: logger.error(f"Lỗi truy vấn KB (get): {e}", exc_info=True, extra=log_extra); return None
+    except Exception as e: logger.error(f"Lỗi KB (get): {e}", exc_info=True, extra=log_extra); return None
+
+async def save_or_update_kb_async(data: dict, db_tuple: tuple) -> bool:
+    connection, cursor = db_tuple; log_extra = {'request_id': data.get('request_id', 'KB_SAVE_ASYNC')}
+    if not cursor or not connection: logger.error("Lỗi DB Conn/Cursor (save).", extra=log_extra); return False
+    required = ['comment_text', 'comment_hash', 'sentiment'];
+    if not all(k in data for k in required): logger.error("Thiếu dữ liệu lưu KB."); return False
+    suggestions_json = None
+    if data.get('suggestions') is not None:
+        try: suggestions_json = json.dumps(data['suggestions'], ensure_ascii=False)
+        except: suggestions_json = json.dumps([str(s) for s in data.get('suggestions',[])], ensure_ascii=False) # Fallback
+
+    try:
+        query = """INSERT INTO knowledge_base (comment_text, comment_hash, sentiment, confidence, suggestions, generated_response) VALUES (%s, %s, %s, %s, %s, %s) ON DUPLICATE KEY UPDATE sentiment = VALUES(sentiment), confidence = VALUES(confidence), suggestions = IF(VALUES(suggestions) IS NOT NULL, VALUES(suggestions), suggestions), generated_response = IF(VALUES(generated_response) IS NOT NULL, VALUES(generated_response), generated_response), last_used_at = CURRENT_TIMESTAMP;"""
+        values = ( data['comment_text'], data['comment_hash'], data['sentiment'], data.get('confidence'), suggestions_json, data.get('generated_response') )
+        def db_write(): # Hàm để chạy trong thread
+             cursor.execute(query, values)
+             connection.commit()
+        await asyncio.to_thread(db_write) # Chạy trong thread
+        logger.info(f"Đã lưu/cập nhật KB: {data['comment_hash']}", extra=log_extra); return True
+    except MySQLError as e: logger.error(f"Lỗi ghi/cập nhật KB: {e}", exc_info=True, extra=log_extra); connection.rollback(); return False
+    except Exception as e: logger.error(f"Lỗi KB (save/update): {e}", exc_info=True, extra=log_extra); connection.rollback(); return False
 
 
 # --- API Endpoints ---
 
-@app.get("/", summary="Kiểm tra Trạng thái API", tags=["General"])
-async def read_root():
-    """Endpoint gốc kiểm tra API và trạng thái các model."""
-    model_status = "Sẵn sàng" if predictor_instance else f"Lỗi ({model_load_error or 'Unknown'})"
-    gemini_status = "Đã cấu hình" if gemini_configured else "Chưa cấu hình"
-    return {"message": "API Phân Tích & Xử Lý Phản Hồi", "model_status": model_status, "gemini_status": gemini_status}
+@app.get("/", tags=["General"])
+async def read_root(db: tuple = Depends(get_db_connection)):
+    connection, _ = db; model_status = "Sẵn sàng" if predictor_instance else f"Lỗi ({model_load_error or 'Unknown'})"; gemini_status = "Đã cấu hình" if gemini_configured else "Chưa cấu hình"; db_connected_status = "Đã kết nối" if connection and connection.is_connected() else f"Lỗi DB ({db_connection_error or 'Chưa tạo Pool'})"
+    return {"message": "API Phân Tích & Xử Lý Phản Hồi", "model_status": model_status, "gemini_status": gemini_status, "db_status": db_connected_status}
 
-@app.post("/sentiment/", response_model=SentimentOnlyResponse, tags=["Sentiment Analysis Only"])
-async def analyze_sentiment_only(
+
+@app.post("/sentiment/", response_model=UnifiedResponse, tags=["Sentiment Analysis Only"]) # Đổi response model
+async def analyze_sentiment_only_kb(
     request: SentimentRequest,
     predictor: SentimentPredictor = Depends(get_predictor),
+    db: tuple = Depends(get_db_connection),
     http_request: Request = None
 ):
-    """Chỉ phân tích cảm xúc bằng model local (nhanh)."""
-    request_id = getattr(http_request.state, 'request_id', 'N/A')
-    log_extra = {'request_id': request_id}
-    logger.info(f"Nhận yêu cầu /sentiment/ cho: {request.comment[:100]}...", extra=log_extra)
-    start_req_time = time.time()
-    try:
-        if not request.comment: raise HTTPException(status_code=400, detail="Bình luận không được để trống.")
-        sentiment_label, confidence, _ = predictor.predict_single(request.comment)
-        if sentiment_label is None: raise HTTPException(status_code=500, detail="Lỗi nội bộ khi phân tích cảm xúc.")
-        processing_time_ms = (time.time() - start_req_time) * 1000
-        logger.info(f"Kết quả /sentiment/: {sentiment_label} (Conf: {confidence:.4f}) trong {processing_time_ms:.2f} ms", extra=log_extra)
-        return SentimentOnlyResponse(
-            sentiment=sentiment_label, confidence=confidence,
-            model_used="local_xlmr", processing_time_ms=processing_time_ms
+    """Phân tích cảm xúc (local), đọc KB, lưu kết quả cơ bản vào KB nếu chưa có."""
+    request_id = getattr(http_request.state, 'request_id', 'N/A'); log_extra = {'request_id': request_id}
+    logger.info(f"Nhận /sentiment/ req: {request.comment[:100]}...", extra=log_extra); start_req_time = time.time()
+    if not request.comment: raise HTTPException(400, "Bình luận trống.")
+    comment_text = request.comment
+    try: comment_hash = hashlib.sha256(comment_text.encode('utf-8')).hexdigest()
+    except Exception: raise HTTPException(500,"Lỗi hashing.")
+
+    # --- Kiểm tra KB ---
+    cached_entry = await get_kb_entry_async(comment_hash, db)
+    if cached_entry:
+        processing_time_ms = (time.time() - start_req_time) * 1000; logger.info(f"Trả về từ Cache (/sentiment/) trong {processing_time_ms:.2f} ms.", extra=log_extra)
+        # Trả về UnifiedResponse với đầy đủ thông tin cache
+        return UnifiedResponse(
+            sentiment=cached_entry['sentiment'], confidence=cached_entry.get('confidence'),
+            ai_call_reason="Đã xử lý trước đó (Cache)", suggestions=cached_entry.get('suggestions'),
+            generated_response=cached_entry.get('generated_response'), processing_time_ms=processing_time_ms,
+            source="cache"
         )
-    except HTTPException as http_err: raise http_err
-    except Exception as e:
-        logger.error(f"Lỗi trong /sentiment/: {e}", exc_info=True, extra=log_extra)
-        raise HTTPException(status_code=500, detail="Lỗi nội bộ khi phân tích cảm xúc.")
+
+    # --- Phân tích mới ---
+    logger.info("Không tìm thấy trong KB (/sentiment/), phân tích mới...", extra=log_extra)
+    sentiment_label, confidence = None, None
+    try: sentiment_label, confidence, _ = predictor.predict_single(comment_text);
+    except Exception as pred_err: logger.error(f"Lỗi predict_single: {pred_err}", exc_info=True, extra=log_extra); raise HTTPException(500, "Lỗi phân tích cảm xúc.")
+    if sentiment_label is None: logger.error("Predict_single trả về None."); raise HTTPException(500, "Lỗi phân tích cảm xúc.")
+    logger.info(f"Kết quả XLM-R (/sentiment/): {sentiment_label} (Conf: {confidence:.4f})", extra=log_extra)
+
+    # --- Lưu vào KB (chỉ sentiment/confidence) ---
+    kb_data = {"comment_text": comment_text, "comment_hash": comment_hash, "sentiment": sentiment_label, "confidence": confidence, "suggestions": None, "generated_response": None, "request_id": request_id}
+    save_success = await save_or_update_kb_async(kb_data, db)
+    if not save_success: logger.error("Không thể lưu /sentiment/ vào KB.", extra=log_extra) # Log nhưng vẫn trả kết quả
+
+    # --- Trả về kết quả ---
+    processing_time_ms = (time.time() - start_req_time) * 1000; logger.info(f"Hoàn thành /sentiment/ (xử lý mới) trong {processing_time_ms:.2f} ms.", extra=log_extra)
+    return UnifiedResponse( # Trả về UnifiedResponse
+        sentiment=sentiment_label, confidence=confidence, ai_call_reason="Chỉ phân tích Sentiment",
+        suggestions=None, generated_response=None, processing_time_ms=processing_time_ms,
+        source="new_sentiment_only"
+    )
 
 
-@app.post("/process/", response_model=ProcessResponse, tags=["Full Processing (Gemini Always)"])
-async def process_comment_full_ai( # Đổi tên hàm cho rõ
+@app.post("/process/", response_model=UnifiedResponse, tags=["Full Processing (KB + Gemini Always)"])
+async def process_comment_kb_enrich(
     request: SentimentRequest,
     predictor: SentimentPredictor = Depends(get_predictor),
-    http_request: Request = None # Inject request để lấy request_id
+    db: tuple = Depends(get_db_connection),
+    http_request: Request = None
 ):
-    """
-    Xử lý bình luận: Luôn gọi Gemini để lấy gợi ý và tạo phản hồi.
-    """
+    """Xử lý đầy đủ: Kiểm tra KB, nếu thiếu AI -> XLM-R -> Gemini -> Cập nhật/Lưu KB."""
+    # ... (Logic endpoint này giữ nguyên như phiên bản trước v1.4.3) ...
     request_id = getattr(http_request.state, 'request_id', 'N/A')
     log_extra = {'request_id': request_id}
-    logger.info(f"Nhận yêu cầu /process/ (luôn gọi AI) cho: {request.comment[:100]}...", extra=log_extra)
+    logger.info(f"Nhận /process/ req: {request.comment[:100]}...", extra=log_extra)
     start_req_time = time.time()
-
-    # --- Bước 1: Phân tích Cảm xúc (Luôn chạy) ---
-    sentiment_label, confidence, _ = None, None, None
+    if not request.comment:
+        raise HTTPException(400, "Bình luận trống.")
+    comment_text = request.comment
     try:
-        if not request.comment: raise HTTPException(status_code=400, detail="Bình luận trống.")
-        sentiment_label, confidence, _ = predictor.predict_single(request.comment)
-        if sentiment_label is None: raise ValueError("Predict_single trả về None")
+        comment_hash = hashlib.sha256(comment_text.encode('utf-8')).hexdigest()
+    except Exception:
+        raise HTTPException(500, "Lỗi hashing.")
+
+    # Bước 0: Kiểm tra KB
+    cached_entry = await get_kb_entry_async(comment_hash, db)
+    sentiment_label, confidence = None, None; internal_suggestions, auto_response = None, None
+    ai_call_reason = "N/A"; source = "new_processing"
+
+    if cached_entry:
+        logger.info(f"Tìm thấy trong KB (/process/).", extra=log_extra); sentiment_label = cached_entry['sentiment']; confidence = cached_entry.get('confidence')
+        if cached_entry.get('suggestions') is not None and cached_entry.get('generated_response') is not None:
+            logger.info("KB đã đủ thông tin AI. Trả về từ cache.", extra=log_extra); internal_suggestions = cached_entry['suggestions']; auto_response = cached_entry['generated_response']; ai_call_reason = "Đã xử lý trước đó (Cache)"; source = "cache"
+        else: logger.info("KB thiếu thông tin AI. Gọi Gemini để làm giàu...", extra=log_extra); ai_call_reason = "Làm giàu KB (Thiếu AI)"; source = "cache_enriched"
+    else:
+        logger.info("Không tìm thấy trong KB (/process/), phân tích mới...", extra=log_extra); ai_call_reason = "Xử lý mới (Luôn gọi AI)"; source = "new_processing"
+        try: sentiment_label, confidence, _ = predictor.predict_single(comment_text);
+        except Exception as pred_err: logger.error(f"Lỗi predict_single: {pred_err}", exc_info=True, extra=log_extra); raise HTTPException(500, "Lỗi phân tích cảm xúc.")
+        if sentiment_label is None: logger.error("Predict_single trả về None."); raise HTTPException(500, "Lỗi phân tích cảm xúc.")
         logger.info(f"XLM-R Result: {sentiment_label} (Conf: {confidence:.4f})", extra=log_extra)
-    except HTTPException as http_err: raise http_err
-    except Exception as pred_err:
-        logger.error(f"Lỗi predict_single: {pred_err}", exc_info=True, extra=log_extra)
-        raise HTTPException(status_code=500, detail="Lỗi nội bộ khi phân tích cảm xúc.")
 
-    # --- Bước 2: Luôn Gọi Gemini (Nếu đã cấu hình) ---
-    internal_suggestions = None
-    auto_response = None
-    ai_call_reason = "Luôn yêu cầu xử lý AI" # Lý do cố định
-
-    if gemini_configured:
-        logger.info(f"Luôn gọi Gemini...", extra=log_extra)
-        try:
-            # Chạy song song
-            task1 = get_gemini_suggestions(request.comment, sentiment_label, request_id)
-            task2 = generate_gemini_response(request.comment, sentiment_label, None, request_id) # Tạm thời không truyền sugg khi chạy song song
-            results = await asyncio.gather(task1, task2, return_exceptions=True)
-            logger.info(f"Hoàn thành gọi Gemini song song.", extra=log_extra)
-            # Xử lý kết quả/lỗi
-            internal_suggestions = results[0] if not isinstance(results[0], Exception) else [f"Lỗi AI Suggestions: {type(results[0]).__name__}"]
-            auto_response = results[1] if not isinstance(results[1], Exception) else f"Lỗi tạo phản hồi AI: {type(results[1]).__name__}"
+    # Gọi Gemini nếu là xử lý mới HOẶC làm giàu cache
+    if source != "cache":
+        if gemini_configured:
+            logger.info(f"Gọi Gemini. Lý do: {ai_call_reason}", extra=log_extra)
+            try: task1 = get_gemini_suggestions(comment_text, sentiment_label, request_id); task2 = generate_gemini_response(comment_text, sentiment_label, None, request_id); results = await asyncio.gather(task1, task2, return_exceptions=True)
+            except Exception as gather_err: logger.error(f"Lỗi gather Gemini: {gather_err}", exc_info=True, extra=log_extra); results = [gather_err, gather_err]
+            internal_suggestions = results[0] if not isinstance(results[0], Exception) else [f"Lỗi AI Sugg: {type(results[0]).__name__}"]
+            auto_response = results[1] if not isinstance(results[1], Exception) else f"Lỗi AI Resp: {type(results[1]).__name__}"
             if isinstance(results[0], Exception): logger.error(f"Lỗi task gợi ý: {results[0]}", exc_info=results[0], extra=log_extra)
             if isinstance(results[1], Exception): logger.error(f"Lỗi task phản hồi: {results[1]}", exc_info=results[1], extra=log_extra)
-        except Exception as gather_err:
-            logger.error(f"Lỗi nghiêm trọng khi gọi Gemini song song: {gather_err}", exc_info=True, extra=log_extra)
-            internal_suggestions = ["Lỗi hệ thống gọi AI."]
-            auto_response = "Lỗi hệ thống gọi AI."
-    else:
-        logger.warning("Gemini chưa cấu hình.", extra=log_extra)
-        ai_call_reason += " (Gemini chưa cấu hình)"
-        internal_suggestions = ["Gemini chưa được cấu hình."]
-        auto_response = "Gemini chưa được cấu hình."
+        else: logger.warning("Gemini chưa cấu hình.", extra=log_extra); ai_call_reason += " (Chưa cấu hình)"; internal_suggestions = ["Gemini chưa được cấu hình."]; auto_response = "Gemini chưa được cấu hình."
 
+        # Lưu/Cập nhật vào KB
+        if sentiment_label is not None: # Chỉ lưu nếu có sentiment hợp lệ
+             logger.info("Lưu/Cập nhật kết quả đầy đủ vào KB...", extra=log_extra)
+             kb_data = {"comment_text": comment_text,"comment_hash": comment_hash,"sentiment": sentiment_label,"confidence": confidence,"suggestions": internal_suggestions,"generated_response": auto_response, "request_id": request_id}
+             save_success = await save_or_update_kb_async(kb_data, db)
+             if not save_success: logger.error("Không thể lưu/cập nhật KB.", extra=log_extra)
 
-    end_req_time = time.time()
-    processing_time_ms = (end_req_time - start_req_time) * 1000
-    logger.info(f"Xử lý /process/ hoàn tất trong {processing_time_ms:.2f} ms.", extra=log_extra)
-
-    # --- Bước 3: Trả về Kết quả ---
-    return ProcessResponse(
-        sentiment=sentiment_label,
-        confidence=confidence,
-        ai_call_reason=ai_call_reason,
-        suggestions=internal_suggestions,
-        generated_response=auto_response,
-        processing_time_ms=processing_time_ms
+    # Trả về Response
+    processing_time_ms = (time.time() - start_req_time) * 1000
+    logger.info(f"Hoàn thành /process/ (source: {source}) trong {processing_time_ms:.2f} ms.", extra=log_extra)
+    return UnifiedResponse( # Trả về UnifiedResponse
+        sentiment=sentiment_label, confidence=confidence, ai_call_reason=ai_call_reason,
+        suggestions=internal_suggestions, generated_response=auto_response,
+        processing_time_ms=processing_time_ms, source=source
     )
 
 # --- Chạy API Server ---
 if __name__ == "__main__":
-    logger.info("--- Khởi chạy FastAPI Server (Luôn gọi Gemini) ---")
-    if not os.path.isdir(config.MODEL_SAVE_PATH):
-        logger.warning(f"!!! Không tìm thấy thư mục model '{config.MODEL_SAVE_PATH}'. !!!")
-    # Chạy không reload để tránh lỗi re-init logger nhiều lần khi debug
+    logger.info("--- Khởi chạy FastAPI Server (KB Chung - Enrich Logic) ---")
+    if not PREDICTOR_LOADED or predictor_instance is None: logger.error("!!! Model XLM-R lỗi tải !!!")
+    # Không cần gọi connect_db() ở đây vì startup sẽ tạo pool
     uvicorn.run("api:app", host=config.API_HOST, port=config.API_PORT, reload=False, log_level="info")
