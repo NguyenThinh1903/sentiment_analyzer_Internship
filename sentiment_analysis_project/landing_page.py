@@ -258,6 +258,6 @@ st.markdown("Để biết thêm thông tin chi tiết hoặc yêu cầu tích h�
 # --- Footer ---
 st.markdown("""
 <div class="footer">
-    Dự án Thực tập - Nguyễn Trần Hoàng Thịnh - Trường Đại học Gia Định | Được hỗ trợ bởi <a href='https://x.ai' style='color: #00ddeb; text-decoration: underline;'>xAI</a>
+    Dự án Thực tập - Nguyễn Trần Hoàng Thịnh - Trường Đại học Gia Định | Được hướng dẫn bởi Ths. Đặng Quốc Phong
 </div>
 """, unsafe_allow_html=True)

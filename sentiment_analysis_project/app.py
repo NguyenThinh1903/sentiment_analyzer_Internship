@@ -213,16 +213,21 @@ with tab2:
             with st.spinner("Đang đọc CSV..."):
                 try:
                     df_batch = pd.read_csv(uploaded_file_batch, encoding='utf-8-sig', low_memory=False)
-                except:
+                except UnicodeDecodeError:
                     df_batch = pd.read_csv(uploaded_file_batch, encoding='utf-8', low_memory=False)
-            st.success(f"✅ Đã tải file '{uploaded_file_batch.name}' ({len(df_batch)} dòng).")
+                except Exception as e:
+                    st.error(f"Lỗi đọc file: {e}")
+                    st.write("Nội dung file (dạng text):", uploaded_file_batch.getvalue().decode('utf-8', errors='ignore'))
+                    st.stop()
+
+            st.success(f"✅ File '{uploaded_file_batch.name}' đã được tải thành công! (Tổng {len(df_batch)} dòng)")
 
             # Kiểm tra sự tồn tại của cả 2 cột
             if comment_col_name_cfg not in df_batch.columns:
                 st.error(f"Lỗi: Không tìm thấy cột bình luận '{comment_col_name_cfg}' trong file CSV.")
                 st.stop()
             if product_id_col_actual not in df_batch.columns:
-                st.error(f"Lỗi: Không tìm thấy cột sản phẩm '{product_id_col_actual}' bạn đã nhập.")
+                st.error(f"Lỗi: Không tìm thấy cột sản phẩm '{product_id_col_actual}' trong file CSV.")
                 st.stop()
 
             if st.button("📊 Phân tích theo Sản phẩm & Nhận Gợi ý AI", key="analyze_csv_by_product"):
@@ -322,6 +327,63 @@ with tab2:
                         st.metric("Số lần dùng Cache KB", cache_hit_count)
                     with col_b_stat4:
                         st.metric("Ước tính cần Gọi AI*", potential_ai_call_count, help="Số dòng có độ tin cậy thấp/tiêu cực hoặc cần làm giàu KB, sẽ gọi Gemini nếu dùng 'Xử lý Chi tiết'.")
+
+                    # --- Dashboard Tổng hợp: Thống kê phản hồi tốt/xấu/trung tính ---
+                    st.markdown("---")
+                    st.subheader("🌟 Dashboard Tổng hợp: Phân tích Cảm xúc Toàn bộ File")
+                    
+                    # Lọc các dòng phân tích thành công
+                    valid_df = results_df_batch[results_df_batch['status'] == 'Thành công']
+                    total_valid = len(valid_df)
+                    
+                    if total_valid > 0:
+                        # Tính số lượng từng loại cảm xúc
+                        sentiment_counts_total = valid_df['sentiment'].value_counts()
+                        all_labels_cfg = list(getattr(config, 'TARGET_LABEL_MAP', {}).values())
+                        sentiment_counts_total = sentiment_counts_total.reindex(all_labels_cfg, fill_value=0)
+                        color_map_cfg = {"Tiêu cực": '#DC143C', "Trung tính": '#FFD700', "Tích cực": '#32CD32'}
+                        counts_to_plot_total = sentiment_counts_total[sentiment_counts_total.index.isin(color_map_cfg.keys())]
+
+                        # Hiển thị số liệu và biểu đồ
+                        col_total_chart, col_total_stats = st.columns([2, 1])
+                        
+                        with col_total_chart:
+                            # Vẽ biểu đồ tròn
+                            fig_pie_total = px.pie(
+                                names=counts_to_plot_total.index,
+                                values=counts_to_plot_total.values,
+                                title="Tỷ lệ Cảm xúc Toàn bộ File",
+                                color=counts_to_plot_total.index,
+                                color_discrete_map=color_map_cfg,
+                                height=300
+                            )
+                            st.plotly_chart(fig_pie_total, use_container_width=True)
+                        
+                        with col_total_stats:
+                            # Tính phần trăm
+                            pos_count = counts_to_plot_total.get("Tích cực", 0)
+                            neg_count = counts_to_plot_total.get("Tiêu cực", 0)
+                            neu_count = counts_to_plot_total.get("Trung tính", 0)
+                            pos_p = (pos_count / total_valid) * 100 if total_valid > 0 else 0
+                            neg_p = (neg_count / total_valid) * 100 if total_valid > 0 else 0
+                            neu_p = (neu_count / total_valid) * 100 if total_valid > 0 else 0
+
+                            st.markdown("**Thống kê Phản hồi:**")
+                            st.markdown(f"- **Phản hồi Tốt (Tích cực):** {pos_count} ({pos_p:.1f}%)")
+                            st.markdown(f"- **Phản hồi Xấu (Tiêu cực):** {neg_count} ({neg_p:.1f}%)")
+                            st.markdown(f"- **Phản hồi Trung tính:** {neu_count} ({neu_p:.1f}%)")
+                            st.markdown("---")
+                            st.markdown("**Nhận xét Tổng quan:**")
+                            if pos_p >= 65:
+                                st.success("Phần lớn phản hồi là Tích cực, cho thấy khách hàng hài lòng.")
+                            elif neg_p >= 35:
+                                st.error("Tỷ lệ phản hồi Tiêu cực cao, cần xem xét và cải thiện ngay.")
+                            elif neg_p >= 20:
+                                st.warning("Tỷ lệ phản hồi Tiêu cực đáng chú ý, nên kiểm tra chi tiết.")
+                            else:
+                                st.info("Phản hồi tương đối cân bằng, cần theo dõi thêm.")
+                    else:
+                        st.warning("Không có dữ liệu hợp lệ để hiển thị Dashboard Tổng hợp.")
 
                     # --- Hiển thị Phân tích theo từng Product ID ---
                     st.markdown("---")
