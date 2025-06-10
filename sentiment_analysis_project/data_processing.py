@@ -1,19 +1,16 @@
 # data_processing.py (Phiên bản cập nhật cho nhiều dataset)
-
 import pandas as pd
 import re
 import os
 from sklearn.model_selection import train_test_split
-from transformers import AutoTokenizer # Vẫn dùng AutoTokenizer
+from transformers import AutoTokenizer
 from torch.utils.data import Dataset, DataLoader
 import torch
-import traceback # Để in lỗi chi tiết
+import traceback 
 
-import config # Import cấu hình mới
+import config 
 
 # --- Text Cleaning ---
-# Hàm clean_text có thể cần điều chỉnh cho phù hợp hơn với tiếng Việt/Anh
-# Hiện tại giữ nguyên để đơn giản
 def clean_text(text):
     """Làm sạch văn bản cơ bản: chữ thường, xóa URL, HTML, ký tự đặc biệt không cần thiết."""
     if not isinstance(text, str):
@@ -21,8 +18,7 @@ def clean_text(text):
     text = text.lower()
     text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
     text = re.sub(r'<.*?>', '', text)
-    # Regex này khá cơ bản, có thể xóa dấu hoặc ký tự quan trọng. Cân nhắc cải thiện sau.
-    text = re.sub(r"[^a-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ\s.,!?'\"-]", "", text, flags=re.UNICODE) # Cố gắng giữ tiếng Việt và dấu câu cơ bản
+    text = re.sub(r"[^a-z0-9àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ\s.,!?'\"-]", "", text, flags=re.UNICODE) 
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -32,21 +28,19 @@ def standardize_label(label_value, label_type, rating_scale=None, label_values_m
     if label_type == 'rating':
         try:
             rating = int(float(label_value))
-            if rating_scale == (1, 5): # Xử lý cụ thể thang 1-5
-                 if rating in [1, 2]: return 0 # Tiêu cực
-                 elif rating == 3: return 1 # Trung tính
-                 elif rating in [4, 5]: return 2 # Tích cực
-                 else: return 1 # Mặc định Trung tính cho rating ngoài khoảng (0, 6,...)
+            if rating_scale == (1, 5): 
+                 if rating in [1, 2]: return 0 
+                 elif rating == 3: return 1 
+                 elif rating in [4, 5]: return 2 
+                 else: return 1 
             else:
-                 # Nếu có thang điểm khác, cần thêm logic ở đây
                  print(f"Cảnh báo: Thang điểm {rating_scale} chưa được xử lý, trả về Trung tính.")
                  return 1
         except (ValueError, TypeError, TypeError):
-            return 1 # Mặc định Trung tính nếu không phải số
+            return 1 
 
     elif label_type == 'text_label':
         label_str = str(label_value).lower().strip()
-        # Dùng map từ config, trả về Trung tính nếu không tìm thấy
         return label_values_map.get(label_str, 1)
 
     else:
@@ -62,9 +56,7 @@ def load_and_combine_datasets():
     for source in config.DATA_SOURCES:
         print(f"Đang xử lý: {source['path']} ({source['language']})")
         try:
-            # Đọc CSV, thử các encoding phổ biến
             try:
-                # Dùng low_memory=False để tránh cảnh báo dtype khi cột phức tạp
                 df = pd.read_csv(source['path'], encoding='utf-8-sig', low_memory=False)
             except UnicodeDecodeError:
                  print("  Không đọc được bằng utf-8-sig, thử utf-8...")
@@ -75,15 +67,13 @@ def load_and_combine_datasets():
                      df = pd.read_csv(source['path'], encoding='latin-1', low_memory=False)
                  except Exception as e:
                      print(f" Lỗi khi đọc bằng utf-8: {e}")
-                     continue # Bỏ qua file nếu vẫn lỗi đọc
+                     continue 
             except Exception as e:
                  print(f" Lỗi khi đọc bằng utf-8-sig: {e}")
-                 continue # Bỏ qua file nếu lỗi đọc
+                 continue 
 
 
             print(f"  Đã tải {len(df)} dòng.")
-            # print(f"  Tên cột gốc: {df.columns.tolist()}") # Bỏ comment để debug nếu cần
-
             # Kiểm tra sự tồn tại của các cột cần thiết
             if source['text_col'] not in df.columns:
                 print(f"  Lỗi: Không tìm thấy cột text '{source['text_col']}'. Bỏ qua file này.")
@@ -120,7 +110,6 @@ def load_and_combine_datasets():
 
             # 6. Chỉ giữ các cột cần thiết và loại bỏ dòng có text rỗng sau khi clean
             df_processed = df_processed[['cleaned_text', 'label', 'language']].copy()
-            # Đảm bảo cleaned_text không rỗng
             df_processed = df_processed[df_processed['cleaned_text'].str.strip().astype(bool)]
 
 
@@ -179,7 +168,7 @@ def split_data(df, test_size, val_size, random_state=42):
             df,
             test_size=test_size,
             random_state=random_state,
-            stratify=df['label'] # Đảm bảo tỷ lệ nhãn cân bằng
+            stratify=df['label'] 
         )
     except ValueError as e:
          print(f"Lỗi khi chia dữ liệu (stratify): {e}")
@@ -206,7 +195,7 @@ def split_data(df, test_size, val_size, random_state=42):
     print(f"Chia dữ liệu: Train={len(train_df)}, Validation={len(val_df)}, Test={len(test_df)}")
     return train_df, val_df, test_df
 
-# --- PyTorch Dataset Class (Giữ nguyên) ---
+# --- PyTorch Dataset Class  ---
 class SentimentDataset(Dataset):
     def __init__(self, texts, labels, tokenizer, max_len):
         self.texts = texts
@@ -220,7 +209,7 @@ class SentimentDataset(Dataset):
         label = int(self.labels[idx])
         encoding = self.tokenizer.encode_plus(
             text, add_special_tokens=True, max_length=self.max_len,
-            return_token_type_ids=False, # PhoBERT không cần token_type_ids
+            return_token_type_ids=False, 
             padding='max_length', truncation=True,
             return_attention_mask=True, return_tensors='pt',
         )
@@ -230,7 +219,7 @@ class SentimentDataset(Dataset):
             'labels': torch.tensor(label, dtype=torch.long)
         }
 
-# --- DataLoader Creation (Giữ nguyên logic) ---
+# --- DataLoader Creation  ---
 def create_data_loader(df, tokenizer, max_len, batch_size, shuffle=False):
     if df is None or df.empty:
         print("Cảnh báo: DataFrame rỗng, không thể tạo DataLoader.")
@@ -238,15 +227,13 @@ def create_data_loader(df, tokenizer, max_len, batch_size, shuffle=False):
     if 'cleaned_text' not in df.columns or 'label' not in df.columns:
         print("Lỗi: DataFrame thiếu cột 'cleaned_text' hoặc 'label'.")
         return None
-    # Đảm bảo labels là kiểu số nguyên trước khi tạo Dataset
     try:
         df['label'] = df['label'].astype(int)
     except Exception as e:
         print(f"Lỗi khi chuyển đổi cột label sang int: {e}")
-        # Có thể thêm xử lý lỗi ở đây nếu cần
 
     dataset = SentimentDataset(
-        texts=df.cleaned_text.values, # Dùng .values cho hiệu quả hơn
+        texts=df.cleaned_text.values, 
         labels=df.label.values,
         tokenizer=tokenizer,
         max_len=max_len
@@ -254,7 +241,7 @@ def create_data_loader(df, tokenizer, max_len, batch_size, shuffle=False):
     return DataLoader(
         dataset, batch_size=batch_size, shuffle=shuffle,
         num_workers=0,
-        pin_memory=True if config.DEVICE == 'cuda' else False # Tăng tốc chuyển dữ liệu sang GPU
+        pin_memory=True if config.DEVICE == 'cuda' else False
     )
 
 # --- Hàm Chuẩn bị Dữ liệu Chính (Giữ nguyên logic, dùng config mới) ---
@@ -306,7 +293,6 @@ def load_processed_data():
         val_df = pd.read_csv(config.VAL_FILE)
         test_df = pd.read_csv(config.TEST_FILE)
         print("Đã tải các tập train, validation, test đã xử lý (từ dữ liệu gộp).")
-        # Đảm bảo cột label là int sau khi load
         train_df['label'] = train_df['label'].astype(int)
         val_df['label'] = val_df['label'].astype(int)
         test_df['label'] = test_df['label'].astype(int)

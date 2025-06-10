@@ -1,12 +1,10 @@
 # train.py (Cập nhật train_epoch để dùng Gradient Accumulation)
-
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from transformers import get_linear_schedule_with_warmup
 import pandas as pd
 import numpy as np
-# from sklearn.metrics import accuracy_score, classification_report
 import os
 import time
 import json
@@ -15,7 +13,6 @@ import config
 from data_processing import prepare_combined_data, load_processed_data, create_data_loader
 from model import load_model_and_tokenizer
 
-# Hàm evaluate_epoch giữ nguyên như trước
 def evaluate_epoch(model, data_loader, device):
     """Thực hiện đánh giá trên tập validation."""
     model = model.eval()
@@ -43,15 +40,14 @@ def evaluate_epoch(model, data_loader, device):
     return epoch_accuracy, epoch_loss
 
 
-# !!! SỬA ĐỔI HÀM train_epoch !!!
 def train_epoch(model, data_loader, optimizer, device, scheduler, epoch_num, total_epochs, accumulation_steps):
     """Thực hiện một epoch huấn luyện với Gradient Accumulation."""
     model = model.train()
-    total_loss = 0.0 # Theo dõi tổng loss trong epoch thay vì list
+    total_loss = 0.0 
     correct_predictions = 0
     total_samples = 0
     num_batches = len(data_loader)
-    optimizer.zero_grad() # Reset gradient ở đầu epoch
+    optimizer.zero_grad()
 
     epoch_start_time = time.time()
     batch_start_time = time.time()
@@ -63,7 +59,6 @@ def train_epoch(model, data_loader, optimizer, device, scheduler, epoch_num, tot
         attention_mask = batch["attention_mask"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
 
-        # Forward pass
         outputs = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -71,69 +66,50 @@ def train_epoch(model, data_loader, optimizer, device, scheduler, epoch_num, tot
         )
         loss = outputs.loss
         logits = outputs.logits
-
-        # Tính accuracy cho batch (chỉ để theo dõi, không ảnh hưởng huấn luyện)
-        with torch.no_grad(): # Không cần tính grad cho accuracy
+        with torch.no_grad():
             _, preds = torch.max(logits, dim=1)
             correct_predictions += torch.sum(preds == labels)
             total_samples += labels.size(0)
 
         # --- Gradient Accumulation Logic ---
         # 1. Chuẩn hóa loss
-        # Chia loss cho số bước tích lũy để giá trị trung bình không bị quá lớn
         loss = loss / accumulation_steps
-        total_loss += loss.item() * accumulation_steps # Cộng dồn loss đã chuẩn hóa * lại số bước
-
-        # 2. Backward pass để tính gradient cho batch nhỏ này
+        total_loss += loss.item() * accumulation_steps
         loss.backward()
-
-        # 3. Cập nhật trọng số chỉ sau mỗi `accumulation_steps`
         if (i + 1) % accumulation_steps == 0 or (i + 1) == num_batches:
-            # Clip gradients trước khi cập nhật (quan trọng)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-            # Cập nhật trọng số model
             optimizer.step()
-
-            # Cập nhật learning rate
             scheduler.step()
-
-            # Reset gradients cho lần tích lũy tiếp theo
             optimizer.zero_grad()
-        # --- Kết thúc Gradient Accumulation Logic ---
 
 
-        # In tiến trình sau một số bước cập nhật (không phải mỗi batch nhỏ)
-        batches_per_log_update = max(1, (num_batches // accumulation_steps) // 20) # In ~20 lần cập nhật/epoch
-        # Tính step cập nhật hiện tại
+
+     
+        batches_per_log_update = max(1, (num_batches // accumulation_steps) // 20) 
         current_update_step = (i + 1) // accumulation_steps
 
-        if (i + 1) % accumulation_steps == 0 or (i + 1) == num_batches: # Chỉ in khi cập nhật xong
+        if (i + 1) % accumulation_steps == 0 or (i + 1) == num_batches:
             if current_update_step % batches_per_log_update == 0 or (i + 1) == num_batches:
                 batch_end_time = time.time()
                 elapsed_block_time = batch_end_time - batch_start_time
-                # Tính thời gian trung bình cho một "cập nhật" (gồm nhiều batch nhỏ)
                 time_per_update = elapsed_block_time / batches_per_log_update if current_update_step % batches_per_log_update == 0 else elapsed_block_time
                 progress = (i + 1) / num_batches
                 current_lr = scheduler.get_last_lr()[0]
 
-                # Tính loss trung bình cho các batch đã qua kể từ lần log trước
                 avg_loss_since_last_log = (total_loss * accumulation_steps) / (i + 1)
 
                 print(f"  Step {(i+1):>5}/{num_batches} [{progress:>6.1%}] Updt {current_update_step:>5} | "
-                      f"Avg Loss: {avg_loss_since_last_log:.4f} | " # Loss trung bình tích lũy
+                      f"Avg Loss: {avg_loss_since_last_log:.4f} | " 
                       f"LR: {current_lr:.2e} | "
                       f"Time/Updt: {time_per_update:.3f}s")
-                batch_start_time = time.time() # Reset timer
+                batch_start_time = time.time() 
 
     epoch_end_time = time.time()
     epoch_accuracy = correct_predictions.double() / total_samples if total_samples > 0 else 0.0
-    # Loss trung bình của epoch là tổng loss chia cho tổng số batch
     epoch_loss = total_loss / num_batches if num_batches > 0 else 0.0
     print(f"Epoch {epoch_num} Hoàn thành sau: {epoch_end_time - epoch_start_time:.2f} giây")
     return epoch_accuracy, epoch_loss
 
-# Hàm main giữ nguyên logic chính, chỉ truyền thêm accumulation_steps
 def main():
     """Vòng lặp huấn luyện chính."""
     print("--- Bắt đầu Quá trình Huấn luyện ---")
@@ -163,7 +139,6 @@ def main():
 
     # --- 3. Tạo DataLoaders ---
     print("Đang tạo DataLoaders...")
-    # Sử dụng num_workers=0 nếu trước đó bạn thấy nó ổn định hơn
     train_data_loader = create_data_loader(train_df, tokenizer, config.MAX_LENGTH, config.BATCH_SIZE, shuffle=True)
     val_data_loader = create_data_loader(val_df, tokenizer, config.MAX_LENGTH, config.BATCH_SIZE, shuffle=False)
 
@@ -185,12 +160,12 @@ def main():
 
     # Tổng số bước cập nhật = (tổng số batch / số bước tích lũy) * số epoch
     total_update_steps = (len(train_data_loader) // config.GRADIENT_ACCUMULATION_STEPS) * config.NUM_EPOCHS
-    num_warmup_steps = int(total_update_steps * 0.05) # Warmup dựa trên số bước cập nhật
+    num_warmup_steps = int(total_update_steps * 0.05)
     print(f"Tổng số bước cập nhật trọng số: {total_update_steps}, Số bước warmup: {num_warmup_steps}")
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=num_warmup_steps,
-        num_training_steps=total_update_steps # Scheduler tính theo số bước cập nhật
+        num_training_steps=total_update_steps 
     )
 
     # --- 5. Vòng lặp Huấn luyện ---
@@ -203,10 +178,9 @@ def main():
     total_start_time = time.time()
 
     for epoch in range(config.NUM_EPOCHS):
-        # Training với accumulation steps
         train_acc, train_loss = train_epoch(
             model, train_data_loader, optimizer, config.DEVICE, scheduler,
-            epoch + 1, config.NUM_EPOCHS, config.GRADIENT_ACCUMULATION_STEPS # Truyền vào số bước tích lũy
+            epoch + 1, config.NUM_EPOCHS, config.GRADIENT_ACCUMULATION_STEPS
         )
         print(f"Epoch {epoch + 1} - Train Loss: {train_loss:.4f} | Train Accuracy: {train_acc:.4f}")
 
@@ -238,10 +212,6 @@ def main():
         else:
             epochs_no_improve += 1
             print(f"  Validation accuracy không cải thiện ({val_acc:.4f}). ({epochs_no_improve}/{patience})")
-            # if epochs_no_improve >= patience:
-            #     print(f"  Dừng sớm do validation accuracy không cải thiện sau {patience} epochs.")
-            #     break
-
     total_end_time = time.time()
     print("\n--- Huấn luyện Hoàn tất ---")
     print(f"Tổng thời gian huấn luyện: {(total_end_time - total_start_time) / 60:.2f} phút")

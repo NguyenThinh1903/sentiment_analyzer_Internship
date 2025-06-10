@@ -3,14 +3,12 @@
 import streamlit as st
 from datetime import datetime
 
-# --- Cấu hình Trang ---
 st.set_page_config(
     page_title="Giải pháp Phân tích Phản hồi Khách hàng AI",
     page_icon="🌟",
     layout="wide"
 )
 
-# --- CSS Tùy chỉnh cho Hiệu ứng và Giao diện Hiện Đại ---
 st.markdown("""
 <style>
 /* Font hiện đại từ Google Fonts */
@@ -247,7 +245,7 @@ st.markdown("---")
 # --- Demo và Liên hệ ---
 st.header("🚀 Trải nghiệm Demo & Liên hệ")
 st.markdown("Bạn có thể trải nghiệm trực tiếp các tính năng của hệ thống, bao gồm phân tích theo <span class='product-highlight'>Product ID</span>, qua ứng dụng demo của chúng tôi.")
-link_to_app = "http://localhost:8501"  # URL demo (có thể thay đổi nếu deploy)
+link_to_app = "http://localhost:8501" 
 st.markdown(f"""
 <div style="text-align: center;">
     <a href="{link_to_app}" class="cta-button">🔗 Chạy Ứng dụng Demo Chính</a>

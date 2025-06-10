@@ -1,5 +1,4 @@
 # app.py (vFinal v2 - Tab 2 Phân tích & Gợi ý AI theo Product ID)
-
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -84,7 +83,7 @@ with tab1:
                 label_map = getattr(config, 'TARGET_LABEL_MAP', {})
                 positive_label = label_map.get(2, "Tích cực")
                 negative_label = label_map.get(0, "Tiêu cực")
-            except: # Nên bắt Exception cụ thể nếu biết
+            except: 
                 label_map = {}
                 positive_label = "Tích cực"
                 negative_label = "Tiêu cực"
@@ -118,7 +117,7 @@ with tab1:
             is_valid_response = generated_response and isinstance(generated_response, str) and "Lỗi" not in generated_response and "chưa cấu hình" not in generated_response and "không tạo ra" not in generated_response
             if is_valid_response:
                 st.text_area("Nội dung:", value=generated_response, height=120, key=f"gen_resp_{source}_{int(time.time())}", disabled=False)
-            elif generated_response: # Hiển thị cả thông báo lỗi/chưa cấu hình từ AI
+            elif generated_response:
                 st.info(generated_response)
             else:
                 st.info("Không có.")
@@ -128,7 +127,7 @@ with tab1:
         is_valid_suggestions = suggestions and isinstance(suggestions, list) and not any("Lỗi" in s or "chưa cấu hình" in s for s in suggestions)
         if is_valid_suggestions:
             st.markdown("\n".join(f"- {s}" for s in suggestions))
-        elif suggestions and isinstance(suggestions, list): # Hiển thị cả thông báo lỗi/chưa cấu hình từ AI
+        elif suggestions and isinstance(suggestions, list):
              st.info(suggestions[0] if suggestions else "Không có.")
         else:
             st.info("Không có.")
@@ -174,7 +173,7 @@ with tab1:
                     payload["product_id"] = product_id_input.strip()
                 with st.spinner('✨ Đang xử lý chi tiết... (Có thể mất vài chục giây)'):
                     try:
-                        response = requests.post(BACKEND_API_URL_PROCESS, json=payload, timeout=180) # Tăng timeout cho process
+                        response = requests.post(BACKEND_API_URL_PROCESS, json=payload, timeout=180)
                         response.raise_for_status()
                         api_response = response.json()
                     except requests.exceptions.Timeout:
@@ -209,44 +208,43 @@ with tab2:
     uploaded_file_batch = st.file_uploader(
         f"Chọn file CSV (cần cột '{comment_col_name_cfg}' và cột Sản phẩm bạn vừa nhập)",
         type=["csv"],
-        key="csv_product_analysis_v2" # Đổi key để tránh xung đột nếu có state cũ
+        key="csv_product_analysis_v2"
     )
     limit_rows_batch_prod = st.number_input(
         "Giới hạn số dòng xử lý (Nhập 0 để xử lý tất cả):",
         min_value=0,
-        value=50, # Đặt giá trị mặc định nhỏ để test nhanh
+        value=50, 
         step=50,
         key="limit_rows_batch_prod_v2",
         help="Để 0 nếu muốn xử lý toàn bộ file. Cẩn thận với file lớn có thể tốn thời gian."
     )
 
     if uploaded_file_batch is not None and product_id_col_name_input.strip():
-        product_id_col_actual = product_id_col_name_input.strip() # Lấy tên cột sản phẩm người dùng nhập
+        product_id_col_actual = product_id_col_name_input.strip()
         try:
-            df_batch_original = None # Đổi tên biến để tránh nhầm lẫn
+            df_batch_original = None
             with st.spinner("Đang đọc CSV..."):
                 try:
-                    # Thử đọc với các encoding phổ biến
                     try:
                         df_batch_original = pd.read_csv(uploaded_file_batch, encoding='utf-8-sig', low_memory=False)
                     except UnicodeDecodeError:
                         try:
                             df_batch_original = pd.read_csv(uploaded_file_batch, encoding='utf-8', low_memory=False)
                         except UnicodeDecodeError:
-                            df_batch_original = pd.read_csv(uploaded_file_batch, encoding='latin-1', low_memory=False) # Thử latin-1
+                            df_batch_original = pd.read_csv(uploaded_file_batch, encoding='latin-1', low_memory=False) 
                 except Exception as e:
                     st.error(f"Lỗi đọc file CSV: {e}. Vui lòng kiểm tra định dạng file.")
                     # In ra một phần nội dung file để debug
-                    uploaded_file_batch.seek(0) # Đưa con trỏ về đầu file
+                    uploaded_file_batch.seek(0) 
                     st.text_area("Nội dung đầu file (để debug):", uploaded_file_batch.read(1000).decode('utf-8', errors='ignore'), height=150)
                     st.stop()
             
-            if df_batch_original is None: # Thêm kiểm tra này
+            if df_batch_original is None:
                 st.error("Không thể đọc được nội dung file CSV.")
                 st.stop()
 
             st.success(f"✅ File '{uploaded_file_batch.name}' đã được tải thành công! (Tổng {len(df_batch_original)} dòng)")
-            st.dataframe(df_batch_original.head()) # Hiển thị 5 dòng đầu
+            st.dataframe(df_batch_original.head())
 
             # Kiểm tra sự tồn tại của cả 2 cột (phân biệt chữ hoa/thường)
             if comment_col_name_cfg not in df_batch_original.columns:
@@ -258,7 +256,7 @@ with tab2:
 
             if st.button("📊 Phân tích theo Sản phẩm & Nhận Gợi ý AI", key="analyze_csv_by_product_v2"):
                 if limit_rows_batch_prod > 0 and limit_rows_batch_prod < len(df_batch_original):
-                    process_df_batch = df_batch_original.head(limit_rows_batch_prod).copy() # Dùng .copy() để tránh SettingWithCopyWarning
+                    process_df_batch = df_batch_original.head(limit_rows_batch_prod).copy()
                     limit_info_batch = f"{limit_rows_batch_prod} dòng đầu"
                 else:
                     process_df_batch = df_batch_original.copy()
@@ -276,15 +274,15 @@ with tab2:
                 
                 start_batch_run_time = time.time()
                 progress_bar_batch = st.progress(0)
-                progress_text_container = st.empty() # Để cập nhật text của progress
+                progress_text_container = st.empty()
 
                 # Lấy cấu hình kiểm tra AI (nếu dùng cho would_call_ai)
-                conf_threshold_batch = float(getattr(config, 'CONFIDENCE_THRESHOLD', 0.80)) # Ví dụ ngưỡng
-                check_negative_batch = bool(getattr(config, 'ALWAYS_CHECK_NEGATIVE', True)) # Ví dụ kiểm tra tiêu cực
+                conf_threshold_batch = float(getattr(config, 'CONFIDENCE_THRESHOLD', 0.80))
+                check_negative_batch = bool(getattr(config, 'ALWAYS_CHECK_NEGATIVE', True)) 
                 label_map_batch = getattr(config, 'TARGET_LABEL_MAP', {})
                 negative_label_value_batch = ""
                 for k, v in label_map_batch.items():
-                    if k == 0: # Giả sử 0 là nhãn tiêu cực
+                    if k == 0:
                         negative_label_value_batch = v
                         break
                 
@@ -292,7 +290,6 @@ with tab2:
                 for index, row in process_df_batch.iterrows():
                     current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     comment_text = str(row[comment_col_name_cfg]) if pd.notna(row[comment_col_name_cfg]) else ""
-                    # Xử lý product_id NaN hoặc rỗng, gán giá trị mặc định nếu cần
                     product_id_val = str(row[product_id_col_actual]) if pd.notna(row[product_id_col_actual]) and str(row[product_id_col_actual]).strip() else "N/A"
 
                     result_row = {
@@ -301,13 +298,13 @@ with tab2:
                         "sentiment": None,
                         "confidence": None,
                         "source": None,
-                        "kb_has_ai_details": False, # Mặc định
+                        "kb_has_ai_details": False,
                         "status": "Chưa xử lý",
-                        "would_call_ai": False, # Mặc định
+                        "would_call_ai": False,
                         "processing_timestamp": current_time_str
                     }
 
-                    if comment_text.strip(): # Chỉ xử lý nếu comment không rỗng
+                    if comment_text.strip():
                         try:
                             payload = {"comment": comment_text, "product_id": product_id_val}
                             response = requests.post(BACKEND_API_URL_SENTIMENT, json=payload, timeout=60)
@@ -324,8 +321,6 @@ with tab2:
                             if api_data.get('source') == 'cache':
                                 cache_hit_count += 1
                             
-                            # Kiểm tra xem KB có AI details không từ phản hồi của API /sentiment/
-                            # API /sentiment/ đã trả về suggestions và generated_response nếu có trong cache
                             if api_data.get('suggestions') is not None or api_data.get('generated_response') is not None:
                                 result_row['kb_has_ai_details'] = True
 
@@ -357,8 +352,7 @@ with tab2:
                         result_row['status'] = 'Bỏ qua (bình luận rỗng)'
                     
                     results_list_batch.append(result_row)
-                    
-                    # Cập nhật progress bar và text
+
                     progress_percentage = (index + 1) / total_to_process_batch
                     progress_text_container.text(f"Đang xử lý dòng {index + 1}/{total_to_process_batch}...")
                     progress_bar_batch.progress(progress_percentage)
@@ -383,11 +377,10 @@ with tab2:
                     # --- Dashboard Tổng hợp ---
                     st.markdown("---")
                     st.subheader("🌟 Dashboard Tổng hợp: Phân tích Cảm xúc Toàn bộ File")
-                    valid_sentiment_df = results_df_batch[results_df_batch['status'] == 'Thành công'].copy() # Dùng .copy()
+                    valid_sentiment_df = results_df_batch[results_df_batch['status'] == 'Thành công'].copy()
                     
                     if not valid_sentiment_df.empty:
                         sentiment_counts_total = valid_sentiment_df['sentiment'].value_counts()
-                        # Đảm bảo tất cả các nhãn đều có, kể cả khi count là 0
                         all_labels_cfg = list(getattr(config, 'TARGET_LABEL_MAP', {0:"Tiêu cực", 1:"Trung tính", 2:"Tích cực"}).values())
                         for label in all_labels_cfg:
                             if label not in sentiment_counts_total:
@@ -415,8 +408,6 @@ with tab2:
                             for label, count in sentiment_counts_total.items():
                                 percentage = (count / total_valid_sentiments) * 100 if total_valid_sentiments > 0 else 0
                                 st.markdown(f"- **{label}:** {count} ({percentage:.1f}%)")
-                            # Thêm nhận xét tổng quan (tương tự code cũ)
-                            # ... (code nhận xét tổng quan) ...
 
                     else:
                         st.warning("Không có dữ liệu cảm xúc hợp lệ để hiển thị Dashboard Tổng hợp.")
@@ -437,7 +428,7 @@ with tab2:
                             else:
                                 st.markdown(f"**Kết quả cho Sản phẩm: `{prod_id}`**")
 
-                            with st.expander(f"Xem chi tiết và gợi ý AI cho '{prod_id}'", expanded=(prod_id != "N/A")): # Mở sẵn nếu là product_id cụ thể
+                            with st.expander(f"Xem chi tiết và gợi ý AI cho '{prod_id}'", expanded=(prod_id != "N/A")):
                                 prod_specific_df = valid_sentiment_df[valid_sentiment_df['product_id'] == prod_id]
                                 if prod_specific_df.empty:
                                     st.write("Không có dữ liệu cảm xúc hợp lệ cho sản phẩm này.")
@@ -459,7 +450,7 @@ with tab2:
                                         labels={'x': 'Cảm xúc', 'y': 'Số lượng'},
                                         color=sentiment_counts_prod.index,
                                         color_discrete_map=color_map_cfg,
-                                        text_auto=True, # Tự động hiển thị giá trị trên cột
+                                        text_auto=True, 
                                         height=300
                                     )
                                     fig_bar_prod.update_layout(showlegend=False, title_text=f"Cảm xúc SP: {prod_id}", title_x=0.5, xaxis_title=None, yaxis_title="Số lượng")
@@ -479,7 +470,7 @@ with tab2:
                                             # Tạo prompt tóm tắt
                                             summary_parts = []
                                             for label, count in sentiment_counts_prod.items():
-                                                if count > 0: # Chỉ thêm vào prompt nếu có count
+                                                if count > 0:
                                                     percentage = (count / total_prod_sentiments) * 100
                                                     summary_parts.append(f"{label} {percentage:.0f}% ({count} bình luận)")
                                             sentiment_summary_for_prompt = ", ".join(summary_parts)
@@ -493,7 +484,7 @@ Ví dụ Gợi ý:
                                             
                                             with st.spinner(f"Đang lấy gợi ý AI cho sản phẩm {prod_id}..."):
                                                 try:
-                                                    model_gen_prod = genai.GenerativeModel('gemini-1.5-flash') # Hoặc model bạn muốn
+                                                    model_gen_prod = genai.GenerativeModel('gemini-1.5-flash')
                                                     response_gen_prod = model_gen_prod.generate_content(prompt_prod_summary)
                                                     prod_suggestions_text = response_gen_prod.text.strip()
                                                     if prod_suggestions_text:
@@ -525,7 +516,6 @@ Ví dụ Gợi ý:
                         # Lấy các cột thực sự tồn tại trong df_to_convert để tránh KeyError
                         existing_cols = [col for col in cols_to_export if col in df_to_convert.columns]
                         try:
-                            # Quan trọng: encoding='utf-8-sig' để Excel đọc tiếng Việt đúng
                             return df_to_convert[existing_cols].to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
                         except Exception as e:
                             st.error(f"Lỗi khi chuyển đổi DataFrame sang CSV: {e}")
@@ -536,7 +526,7 @@ Ví dụ Gợi ý:
                     if csv_data_to_download:
                         st.download_button(
                             label="📥 Tải Kết quả (CSV)",
-                            data=csv_data_to_download, # Dữ liệu đã được encode
+                            data=csv_data_to_download, 
                             file_name=f'ket_qua_phan_tich_cam_xuc_{uploaded_file_batch.name}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv',
                             mime='text/csv'
                         )
@@ -580,7 +570,7 @@ with tab3:
                 # Hiển thị đẹp hơn classification report dạng dict
                 report_df_data = []
                 for label, metrics in eval_summary['classification_report_dict'].items():
-                    if isinstance(metrics, dict): # Bỏ qua các dòng tổng hợp như accuracy, macro avg, weighted avg ở đây
+                    if isinstance(metrics, dict):
                         report_df_data.append({
                             'Cảm xúc': label.capitalize(),
                             'Precision': f"{metrics.get('precision',0):.4f}",
@@ -591,7 +581,7 @@ with tab3:
                 if report_df_data:
                     report_display_df = pd.DataFrame(report_df_data)
                     st.dataframe(report_display_df.set_index('Cảm xúc'))
-            elif os.path.exists(classification_report_path): # Nếu không có dict, thử đọc từ file txt
+            elif os.path.exists(classification_report_path):
                  st.subheader("📊 Báo cáo Phân loại (Từ File)")
                  with open(classification_report_path, 'r', encoding='utf-8') as f:
                      st.text(f.read())

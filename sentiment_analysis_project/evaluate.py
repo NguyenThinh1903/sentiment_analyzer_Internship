@@ -1,5 +1,4 @@
 # evaluate.py (Bổ sung chi tiết đánh giá)
-
 import torch
 from torch.utils.data import DataLoader
 import pandas as pd
@@ -7,7 +6,7 @@ import numpy as np
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, precision_recall_fscore_support
 import os
 import time
-import json # Để lưu kết quả chi tiết hơn
+import json
 import traceback
 
 import config
@@ -15,9 +14,7 @@ from data_processing import load_processed_data, create_data_loader
 from model import load_model_and_tokenizer
 from visualization import plot_confusion_matrix, plot_training_history
 
-# Hàm evaluate_epoch giữ nguyên như trước (trả về acc, loss, preds, labels)
 def evaluate_epoch(model, data_loader, device):
-    # ... (code evaluate_epoch như cũ) ...
     model = model.eval()
     losses = []
     correct_predictions = 0
@@ -52,8 +49,7 @@ def evaluate_model():
     print(f"Sử dụng thiết bị: {config.DEVICE}")
 
     # --- 1. Tải Dữ liệu Test ---
-    # Cần cả test_df để lưu lại các mẫu bị sai
-    train_df, val_df, test_df = load_processed_data() # Load cả 3
+    train_df, val_df, test_df = load_processed_data()
     if test_df is None:
         print("Không thể tải dữ liệu test. Kết thúc đánh giá.")
         return
@@ -61,20 +57,19 @@ def evaluate_model():
     # --- 2. Tải Model và Tokenizer ---
     print(f"Đang tải model từ {config.MODEL_SAVE_PATH}...")
     model, tokenizer = load_model_and_tokenizer(config.MODEL_SAVE_PATH, config.NUM_LABELS)
-    if model is None or tokenizer is None: return # Thêm return để gọn
+    if model is None or tokenizer is None: return
     model.to(config.DEVICE)
 
     # --- 3. Tạo Test DataLoader ---
     print("Đang tạo Test DataLoader...")
-    # Giảm batch size khi đánh giá nếu cần tiết kiệm bộ nhớ, nhưng có thể chậm hơn
-    eval_batch_size = config.BATCH_SIZE # Hoặc đặt giá trị nhỏ hơn
+    eval_batch_size = config.BATCH_SIZE 
     test_data_loader = create_data_loader(test_df, tokenizer, config.MAX_LENGTH, eval_batch_size, shuffle=False)
     if test_data_loader is None: return
 
     # --- 4. Thực hiện Đánh giá ---
     print("Đang đánh giá trên tập test...")
     start_time = time.time()
-    results = {} # Dictionary để lưu tất cả kết quả
+    results = {} 
     try:
          test_acc_tensor, test_loss, y_pred, y_true = evaluate_epoch(model, test_data_loader, config.DEVICE)
          test_acc = test_acc_tensor.item()
@@ -97,7 +92,7 @@ def evaluate_model():
     # --- 5. Tính toán và Lưu Metrics Chi Tiết ---
     try:
         target_names = list(config.TARGET_LABEL_MAP.values())
-        labels_indices = list(config.TARGET_LABEL_MAP.keys()) # [0, 1, 2]
+        labels_indices = list(config.TARGET_LABEL_MAP.keys())
     except AttributeError:
         print("Lỗi: Biến 'TARGET_LABEL_MAP' không được định nghĩa trong config.py!")
         return
@@ -166,10 +161,8 @@ def evaluate_model():
         try:
              if results['true_labels'] and results['predictions']:
                  cm = confusion_matrix(results['true_labels'], results['predictions'], labels=labels_indices)
-                 results['confusion_matrix'] = cm.tolist() # Lưu dạng list để dễ serialize
+                 results['confusion_matrix'] = cm.tolist() 
                  plot_confusion_matrix(cm, class_names=target_names, save_path=config.CONFUSION_MATRIX_FILE)
-
-                 # Phân tích sơ bộ CM
                  print("Phân tích Ma trận Nhầm lẫn:")
                  for i, true_label_name in enumerate(target_names):
                       print(f"  Nhãn thực tế '{true_label_name}':")
@@ -187,26 +180,18 @@ def evaluate_model():
         # --- 7. Phân tích Lỗi (Error Analysis) - Lưu các mẫu bị sai ---
         print("\nĐang phân tích lỗi và lưu các mẫu dự đoán sai...")
         try:
-            # Lấy index của các mẫu bị dự đoán sai
             error_indices = [idx for idx, (true, pred) in enumerate(zip(results['true_labels'], results['predictions'])) if true != pred]
             if error_indices:
-                 # Lấy các mẫu sai từ test_df gốc (cần đảm bảo test_df không bị shuffle khi tạo DataLoader)
-                 # Lưu ý: test_df.iloc[error_indices] hoạt động nếu test_df giữ nguyên thứ tự
                  error_df = test_df.iloc[error_indices].copy()
                  error_df['predicted_label_index'] = [results['predictions'][i] for i in error_indices]
-                 # Map index dự đoán sai sang tên nhãn
                  error_df['predicted_label_name'] = error_df['predicted_label_index'].map(config.TARGET_LABEL_MAP)
-                 # Map index thực tế sang tên nhãn
                  error_df['true_label_name'] = error_df['label'].map(config.TARGET_LABEL_MAP)
-
-                 # Giữ các cột quan trọng
                  error_df_to_save = error_df[['cleaned_text', 'true_label_name', 'predicted_label_name']]
 
                  error_file_path = os.path.join(config.VISUALIZATION_DIR, 'error_analysis.csv')
                  error_df_to_save.to_csv(error_file_path, index=False, encoding='utf-8-sig')
                  print(f"Đã lưu {len(error_df_to_save)} mẫu dự đoán sai vào: {error_file_path}")
                  results['error_samples_count'] = len(error_df_to_save)
-                 # Lưu một vài ví dụ lỗi vào results để app có thể hiển thị nhanh
                  results['error_samples_examples'] = error_df_to_save.head(10).to_dict('records')
             else:
                  print("Không tìm thấy mẫu nào dự đoán sai.")
@@ -219,7 +204,6 @@ def evaluate_model():
 
 
     # --- 8. Vẽ Biểu đồ Lịch sử Huấn luyện ---
-    # ... (Giữ nguyên như trước) ...
     history_path = os.path.join(config.MODEL_SAVE_PATH, 'training_history.json')
     history_plot_path = config.TRAINING_CURVES_FILE
     if os.path.exists(history_path):
@@ -229,9 +213,7 @@ def evaluate_model():
         print(f"\nKhông tìm thấy file lịch sử huấn luyện tại {history_path}, bỏ qua.")
 
     # --- 9. Lưu tất cả kết quả đánh giá vào file JSON ---
-    # (Trừ predictions và true_labels vì có thể rất lớn)
     results_to_save = {k: v for k, v in results.items() if k not in ['predictions', 'true_labels']}
-    # Chuyển đổi các giá trị numpy thành list để JSON serialize được
     if 'confusion_matrix' in results_to_save:
         results_to_save['confusion_matrix'] = np.array(results_to_save['confusion_matrix']).tolist()
 

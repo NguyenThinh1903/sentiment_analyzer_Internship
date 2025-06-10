@@ -12,7 +12,7 @@ import google.generativeai as genai
 import mysql.connector
 from mysql.connector import Error as MySQLError, pooling
 
-import config  # Đảm bảo config được import sau load_dotenv
+import config
 try:
     from predict import SentimentPredictor
     PREDICTOR_LOADED = True
@@ -345,7 +345,7 @@ async def save_or_update_kb_async(data: dict, db_tuple: tuple) -> bool:
             data['comment_hash'],
             data['sentiment'],
             data.get('confidence'),
-            data.get('product_id'),  # Thêm product_id
+            data.get('product_id'),
             suggestions_json,
             data.get('generated_response')
         )
