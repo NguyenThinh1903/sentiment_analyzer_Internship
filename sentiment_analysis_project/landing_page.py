@@ -244,11 +244,14 @@ st.markdown("---")
 
 # --- Demo và Liên hệ ---
 st.header("🚀 Trải nghiệm Demo & Liên hệ")
-st.markdown("Bạn có thể trải nghiệm trực tiếp các tính năng của hệ thống, bao gồm phân tích theo <span class='product-highlight'>Product ID</span>, qua ứng dụng demo của chúng tôi.")
+st.markdown("""
+Bạn có thể trải nghiệm trực tiếp các tính năng của hệ thống, bao gồm phân tích theo <span class='product-highlight'>Product ID</span>, qua ứng dụng demo của chúng tôi.
+""", unsafe_allow_html=True)
+
 link_to_app = "http://localhost:8501" 
 st.markdown(f"""
 <div style="text-align: center;">
-    <a href="{link_to_app}" class="cta-button">🔗 Chạy Ứng dụng Demo Chính</a>
+    <a href="{link_to_app}" target="_blank" class="cta-button">🔗 Chạy Ứng dụng Demo Chính</a>
 </div>
 """, unsafe_allow_html=True)
 st.markdown("Để biết thêm thông tin chi tiết hoặc yêu cầu tích hợp, vui lòng liên hệ: thinhnguyen190304@gmail.com")

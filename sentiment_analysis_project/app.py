@@ -364,16 +364,33 @@ with tab2:
                 # --- Bước 2: Tổng hợp kết quả và Gọi Gemini cho từng Product ID ---
                 if results_list_batch:
                     results_df_batch = pd.DataFrame(results_list_batch)
+                  # --- Đoạn code mới để tạo giao diện 2x2 và hiển thị ô gọi AI ---
+
+                    # Tính toán số lượt cần gọi AI
+                    ai_call_count = results_df_batch['would_call_ai'].sum()
+
                     st.markdown("---")
                     st.subheader("📊 Thống kê Chung (Toàn bộ File)")
-                    col_b_stat1, col_b_stat2, col_b_stat3 = st.columns(3)
+
+                    # Tạo hàng thứ nhất với 2 cột
+                    col_b_stat1, col_b_stat2 = st.columns(2)
                     with col_b_stat1:
                         st.metric("Tổng dòng đã xử lý", total_to_process_batch)
                     with col_b_stat2:
-                        st.metric("Số dòng gặp lỗi API", error_count_batch)
+                        st.metric("Số dòng gặp lỗi API", error_count_batch, delta_color="inverse")
+
+                    # Tạo hàng thứ hai với 2 cột
+                    col_b_stat3, col_b_stat4 = st.columns(2)
                     with col_b_stat3:
                         st.metric("Số lần dùng Cache KB", cache_hit_count)
-                    
+                    with col_b_stat4:
+                        # Đây là ô mới sẽ hiển thị số lần gọi AI
+                        st.metric(
+                            "Số dòng cần gọi AI (Ước tính)",
+                            value=int(ai_call_count), 
+                            help="Số dòng này được ước tính dựa trên các điều kiện: bình luận mới (chưa có trong KB) và là tiêu cực/độ tin cậy thấp, hoặc bình luận đã có trong KB nhưng thiếu gợi ý AI chi tiết."
+                        )
+                        
                     # --- Dashboard Tổng hợp ---
                     st.markdown("---")
                     st.subheader("🌟 Dashboard Tổng hợp: Phân tích Cảm xúc Toàn bộ File")

@@ -25,13 +25,11 @@ def load_model_and_tokenizer(model_name_or_path, num_labels):
         return None, None
 
 if __name__ == '__main__':
-    # Test loading the model and tokenizer defined in config
     print(f"Attempting to load model: {config.MODEL_NAME}")
     model, tokenizer = load_model_and_tokenizer(config.MODEL_NAME, config.NUM_LABELS)
 
     if model and tokenizer:
         print("Model and Tokenizer loaded successfully for testing.")
-        # You can add more tests here, e.g., tokenizing a sample sentence
         sample_text = "This is a test sentence."
         encoding = tokenizer(sample_text, return_tensors='pt')
         print("Sample encoding:", encoding)
