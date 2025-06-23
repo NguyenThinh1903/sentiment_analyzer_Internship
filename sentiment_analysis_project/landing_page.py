@@ -248,7 +248,7 @@ st.markdown("""
 Bạn có thể trải nghiệm trực tiếp các tính năng của hệ thống, bao gồm phân tích theo <span class='product-highlight'>Product ID</span>, qua ứng dụng demo của chúng tôi.
 """, unsafe_allow_html=True)
 
-link_to_app = "http://localhost:8501" 
+link_to_app = "http://localhost:8502" 
 st.markdown(f"""
 <div style="text-align: center;">
     <a href="{link_to_app}" target="_blank" class="cta-button">🔗 Chạy Ứng dụng Demo Chính</a>
